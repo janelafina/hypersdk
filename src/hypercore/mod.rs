@@ -738,6 +738,8 @@ pub struct PerpMarket {
     pub margin_mode: Option<MarginMode>,
     /// Whether growth mode is enabled for this market
     pub growth_mode: bool,
+    /// Whether the quote token is aligned for this market
+    pub aligned_quote_token: bool,
     /// Price tick configuration for valid price increments
     pub table: PriceTick,
 }
@@ -1337,6 +1339,7 @@ pub async fn perp_dexs(
             dex.map(|dex| Dex {
                 name: dex.name,
                 index,
+                deployer_fee_scale: dex.deployer_fee_scale,
             })
         })
         .collect();
@@ -1348,6 +1351,8 @@ pub async fn perp_dexs(
 #[serde(rename_all = "camelCase")]
 struct PerpDex {
     name: String,
+    #[serde(default, with = "rust_decimal::serde::str_option")]
+    deployer_fee_scale: Option<Decimal>,
 }
 
 /// Fetches all available perpetual futures markets from HyperCore.
@@ -1363,7 +1368,6 @@ pub async fn perp_markets(
 
     // get it to gather the collateral token
     let spot = raw_spot_markets(url.clone(), client.clone()).await?;
-
     let resp = client
         .post(url)
         .json(&InfoRequest::Meta {
@@ -1393,6 +1397,7 @@ pub async fn perp_markets(
                 isolated_margin: perp.only_isolated,
                 margin_mode: perp.margin_mode,
                 growth_mode: perp.growth_mode,
+                aligned_quote_token: perp.aligned_quote_token,
                 table: PriceTick::for_perp(perp.sz_decimals),
             }
         })
@@ -1434,6 +1439,8 @@ struct PerpUniverseItem {
     sz_decimals: i64,
     #[serde(default, deserialize_with = "deserialize_growth_mode")]
     growth_mode: bool,
+    #[serde(default, alias = "isAlignedQuoteToken", alias = "isQuoteTokenAligned")]
+    aligned_quote_token: bool,
     // margin_table_id: u64,
 }
 
@@ -1615,6 +1622,14 @@ mod tests {
         let user = address!("0xdfc24b077bc1425ad1dea75bcb6f8158e10df303");
         // Should return a list (possibly empty) without error
         let _balances = client.user_balances(user).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_http_user_fees() {
+        let client = hypercore::mainnet();
+        let user = address!("0xdfc24b077bc1425ad1dea75bcb6f8158e10df303");
+        // Smoke test: endpoint should deserialize successfully.
+        let _fees = client.user_fees(user).await.unwrap();
     }
 
     #[tokio::test]

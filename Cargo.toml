@@ -112,6 +112,10 @@ name = "user_role"
 path = "examples/hypercore/user_role.rs"
 
 [[example]]
+name = "user_fees"
+path = "examples/hypercore/user_fees.rs"
+
+[[example]]
 name = "subaccounts"
 path = "examples/hypercore/subaccounts.rs"
 

@@ -167,6 +167,7 @@ pub const ARBITRUM_TESTNET_EIP712_DOMAIN: Eip712Domain = eip712_domain! {
 pub struct Dex {
     pub(super) name: String,
     pub(super) index: usize,
+    pub(super) deployer_fee_scale: Option<Decimal>,
 }
 
 impl Dex {
@@ -181,13 +182,23 @@ impl Dex {
     ///
     /// A new `Dex` instance.
     pub fn new(name: String, index: usize) -> Dex {
-        Dex { name, index }
+        Dex {
+            name,
+            index,
+            deployer_fee_scale: None,
+        }
     }
 
     /// Returns the DEX name.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the deployer fee scale for this DEX.
+    #[must_use]
+    pub fn deployer_fee_scale(&self) -> Option<Decimal> {
+        self.deployer_fee_scale
     }
 }
 
@@ -2529,6 +2540,27 @@ pub struct UserBalance {
     pub entry_ntl: Decimal,
 }
 
+/// User-specific trading fee rates.
+///
+/// Returned by the `userFees` info endpoint.
+///
+/// - `maker_rate` maps to `userAddRate` (adding liquidity)
+/// - `taker_rate` maps to `userCrossRate` (crossing liquidity)
+/// - `referral_discount` maps to `activeReferralDiscount`
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserFees {
+    /// Effective maker fee rate for the user (`userAddRate`).
+    #[serde(rename = "userAddRate")]
+    pub maker_rate: Decimal,
+    /// Effective taker fee rate for the user (`userCrossRate`).
+    #[serde(rename = "userCrossRate")]
+    pub taker_rate: Decimal,
+    /// Active referral discount applied to the user.
+    #[serde(rename = "activeReferralDiscount")]
+    pub referral_discount: Decimal,
+}
+
 impl UserBalance {
     /// Returns the available balance (total - hold).
     ///
@@ -3110,6 +3142,9 @@ pub(super) enum InfoRequest {
     },
     /// Retrieve a user's subaccounts.
     SubAccounts {
+        user: Address,
+    },
+    UserFees {
         user: Address,
     },
 }

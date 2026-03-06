@@ -66,7 +66,7 @@ use crate::hypercore::{
     types::{
         BasicOrder, BatchCancel, BatchCancelCloid, BatchModify, BatchOrder, ClearinghouseState,
         Fill, FundingRate, InfoRequest, OrderResponseStatus, OrderUpdate, ScheduleCancel,
-        SendAsset, SendToken, SpotSend, SubAccount, UsdSend, UserBalance, UserRole,
+        SendAsset, SendToken, SpotSend, SubAccount, UsdSend, UserBalance, UserFees, UserRole,
         UserVaultEquity, VaultDetails,
     },
 };
@@ -593,6 +593,45 @@ impl Client {
             .await?;
 
         Ok(data.balances)
+    }
+
+    /// Retrieves user-specific fee rates.
+    ///
+    /// Returns effective maker and taker rates plus the active referral discount.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hypersdk::hypercore;
+    /// use hypersdk::Address;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let client = hypercore::mainnet();
+    /// let user: Address = "0x...".parse()?;
+    /// let fees = client.user_fees(user).await?;
+    ///
+    /// println!("maker={} taker={} referral_discount={}",
+    ///     fees.maker_rate,
+    ///     fees.taker_rate,
+    ///     fees.referral_discount
+    /// );
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn user_fees(&self, user: Address) -> Result<UserFees> {
+        let mut api_url = self.base_url.clone();
+        api_url.set_path("/info");
+
+        let data = self
+            .http_client
+            .post(api_url)
+            .json(&InfoRequest::UserFees { user })
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        Ok(data)
     }
 
     /// Retrieves the clearinghouse state for a user's perpetual positions.
