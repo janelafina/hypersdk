@@ -1199,6 +1199,50 @@ impl fmt::Display for SpotToken {
     }
 }
 
+/// One side of an outcome market.
+#[derive(Debug, Clone)]
+pub struct OutcomeSideSpec {
+    /// Side name (e.g., "Yes", "No")
+    pub name: String,
+}
+
+/// Outcome market.
+#[derive(Debug, Clone)]
+pub struct OutcomeInfo {
+    /// Outcome ID
+    pub outcome: u32,
+    /// Market name (e.g., "Recurring")
+    pub name: String,
+    /// Market description or structured parameters
+    pub description: String,
+    /// The two sides of this outcome
+    pub side_specs: Vec<OutcomeSideSpec>,
+}
+
+/// Groups multiple outcomes into a question.
+#[derive(Debug, Clone)]
+pub struct OutcomeQuestion {
+    /// Question ID
+    pub question: u32,
+    /// Question name
+    pub name: String,
+    /// Question description
+    pub description: String,
+    /// Fallback outcome if no named outcome wins
+    pub fallback_outcome: Option<u32>,
+    /// Outcome IDs in this question
+    pub named_outcomes: Vec<u32>,
+    /// Already settled outcome IDs
+    pub settled_named_outcomes: Vec<u32>,
+}
+
+/// Outcome market metadata from the `outcomeMeta` info endpoint.
+#[derive(Debug, Clone)]
+pub struct OutcomeMeta {
+    pub outcomes: Vec<OutcomeInfo>,
+    pub questions: Vec<OutcomeQuestion>,
+}
+
 async fn raw_spot_markets(
     core_url: impl IntoUrl,
     client: reqwest::Client,
@@ -1406,7 +1450,89 @@ pub async fn perp_markets(
     Ok(perps)
 }
 
-// TODO: perpDexs
+/// Fetches outcome market metadata from HyperCore.
+pub async fn outcome_meta(
+    core_url: impl IntoUrl,
+    client: reqwest::Client,
+) -> anyhow::Result<OutcomeMeta> {
+    let mut url = core_url.into_url()?;
+    url.set_path("/info");
+
+    let resp = client
+        .post(url)
+        .json(&InfoRequest::OutcomeMeta)
+        .send()
+        .await
+        .context("info")?;
+
+    let raw: RawOutcomeMeta = resp.json().await?;
+
+    Ok(OutcomeMeta {
+        outcomes: raw
+            .outcomes
+            .into_iter()
+            .map(|o| OutcomeInfo {
+                outcome: o.outcome,
+                name: o.name,
+                description: o.description,
+                side_specs: o
+                    .side_specs
+                    .into_iter()
+                    .map(|s| OutcomeSideSpec { name: s.name })
+                    .collect(),
+            })
+            .collect(),
+        questions: raw
+            .questions
+            .into_iter()
+            .map(|q| OutcomeQuestion {
+                question: q.question,
+                name: q.name,
+                description: q.description,
+                fallback_outcome: q.fallback_outcome,
+                named_outcomes: q.named_outcomes,
+                settled_named_outcomes: q.settled_named_outcomes,
+            })
+            .collect(),
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawOutcomeMeta {
+    #[serde(default)]
+    outcomes: Vec<RawOutcomeInfo>,
+    #[serde(default)]
+    questions: Vec<RawOutcomeQuestion>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawOutcomeInfo {
+    outcome: u32,
+    name: String,
+    description: String,
+    side_specs: Vec<RawOutcomeSideSpec>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawOutcomeSideSpec {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawOutcomeQuestion {
+    question: u32,
+    name: String,
+    description: String,
+    fallback_outcome: Option<u32>,
+    #[serde(default)]
+    named_outcomes: Vec<u32>,
+    #[serde(default)]
+    settled_named_outcomes: Vec<u32>,
+}
 
 /// Generates an EVM transfer address for cross-chain transfers.
 ///
@@ -1770,5 +1896,74 @@ mod tests {
             duplicates.len(),
             &duplicates[..duplicates.len().min(10)]
         );
+    }
+
+    #[tokio::test]
+    async fn test_http_outcome_meta_mainnet() {
+        let client = hypercore::mainnet();
+        let meta = client.outcome_meta().await.unwrap();
+        // Mainnet may have empty outcomes — just verify the call succeeds
+        let _ = meta.outcomes.len();
+    }
+
+    #[tokio::test]
+    async fn test_http_outcome_meta_testnet() {
+        let client = hypercore::testnet();
+        let meta = client.outcome_meta().await.unwrap();
+        // Testnet should have outcome markets
+        assert!(!meta.outcomes.is_empty());
+        // Each outcome should have exactly 2 sides
+        for o in &meta.outcomes {
+            assert_eq!(o.side_specs.len(), 2, "outcome {} should have 2 sides", o.outcome);
+        }
+    }
+
+    #[test]
+    fn outcome_meta_deserialize() {
+        let json = r#"{
+            "outcomes": [
+                {
+                    "outcome": 1273,
+                    "name": "Recurring",
+                    "description": "class:priceBinary|underlying:BTC|expiry:20260317-0300|targetPrice:74212|period:1d",
+                    "sideSpecs": [{"name": "Yes"}, {"name": "No"}]
+                },
+                {
+                    "outcome": 9,
+                    "name": "Who will win the HL 100 meter dash?",
+                    "description": "This race is yet to be scheduled.",
+                    "sideSpecs": [{"name": "Hypurr"}, {"name": "Usain Bolt"}]
+                }
+            ],
+            "questions": [
+                {
+                    "question": 1,
+                    "name": "What will Hypurr eat?",
+                    "description": "Food journal.",
+                    "fallbackOutcome": 13,
+                    "namedOutcomes": [10, 11, 12],
+                    "settledNamedOutcomes": []
+                }
+            ]
+        }"#;
+        let meta: RawOutcomeMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.outcomes.len(), 2);
+        assert_eq!(meta.outcomes[0].outcome, 1273);
+        assert_eq!(meta.outcomes[0].name, "Recurring");
+        assert_eq!(meta.outcomes[0].side_specs.len(), 2);
+        assert_eq!(meta.outcomes[0].side_specs[0].name, "Yes");
+        assert_eq!(meta.outcomes[1].side_specs[1].name, "Usain Bolt");
+        assert_eq!(meta.questions.len(), 1);
+        assert_eq!(meta.questions[0].question, 1);
+        assert_eq!(meta.questions[0].fallback_outcome, Some(13));
+        assert_eq!(meta.questions[0].named_outcomes, vec![10, 11, 12]);
+    }
+
+    #[test]
+    fn outcome_meta_empty() {
+        let json = r#"{"outcomes": [], "questions": []}"#;
+        let meta: RawOutcomeMeta = serde_json::from_str(json).unwrap();
+        assert!(meta.outcomes.is_empty());
+        assert!(meta.questions.is_empty());
     }
 }

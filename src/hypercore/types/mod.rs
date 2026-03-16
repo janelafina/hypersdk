@@ -3156,6 +3156,7 @@ pub(super) enum InfoRequest {
     UserFees {
         user: Address,
     },
+    OutcomeMeta,
 }
 
 #[cfg(test)]

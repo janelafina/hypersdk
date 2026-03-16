@@ -58,7 +58,7 @@ use url::Url;
 use super::{AssetTarget, signing::*};
 use crate::hypercore::{
     ActionError, ApiAgent, CandleInterval, Chain, Cloid, Dex, MultiSigConfig, OidOrCloid,
-    PerpMarket, Signature, SpotMarket, SpotToken,
+    OutcomeMeta, PerpMarket, Signature, SpotMarket, SpotToken,
     api::{
         Action, ActionRequest, ApproveAgent, ConvertToMultiSigUser, OkResponse, Response,
         SignersConfig, VaultTransfer,
@@ -317,6 +317,24 @@ impl Client {
     #[inline(always)]
     pub async fn spot_tokens(&self) -> Result<Vec<SpotToken>> {
         super::spot_tokens(self.base_url.clone(), self.http_client.clone()).await
+    }
+
+    /// Fetches outcome market metadata.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hypersdk::hypercore;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let client = hypercore::testnet();
+    /// let meta = client.outcome_meta().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub async fn outcome_meta(&self) -> Result<OutcomeMeta> {
+        super::outcome_meta(self.base_url.clone(), self.http_client.clone()).await
     }
 
     /// Returns all open orders for a user.

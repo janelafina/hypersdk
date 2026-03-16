@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Outcome (prediction) market support: `OutcomeMeta`, `OutcomeInfo`, `OutcomeQuestion`, `OutcomeSideSpec` types
+- `HttpClient::outcome_meta()` and standalone `hypercore::outcome_meta()` for querying HIP-4 markets
 - HyperCore WS subscriptions for `userEvents`, `userTwapSliceFills`, `userTwapHistory`, `activeAssetData`, and `webData2`
 - New typed WS payloads for user events, TWAP slice/history streams, and active asset data
 - Forward-compatible fallback parsing for unknown `userEvents` payload variants
