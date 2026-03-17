@@ -1273,12 +1273,12 @@ pub async fn spot_markets(
             .iter()
             .enumerate()
             .find(|(index, _)| *index as u32 == item.tokens[0])
-            .expect("base");
+            .context("base token index not found")?;
         let (_, quote) = spot_tokens
             .iter()
             .enumerate()
             .find(|(index, _)| *index as u32 == item.tokens[1])
-            .expect("quote");
+            .context("quote token index not found")?;
 
         markets.push(SpotMarket {
             name: item.name,
@@ -1377,7 +1377,10 @@ pub async fn perp_markets(
         .await
         .context("meta")?;
     let data: PerpTokens = resp.json().await?;
-    let collateral = &spot.tokens[data.collateral_token];
+    let collateral = spot
+        .tokens
+        .get(data.collateral_token)
+        .context("collateral token index out of bounds")?;
     let collateral = SpotToken::from(collateral.clone());
     let dex_index = dex.as_ref().map(|dex| dex.index).unwrap_or_default();
 
