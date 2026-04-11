@@ -437,6 +437,8 @@ pub enum Incoming {
     UserTwapHistory(UserTwapHistory),
     /// Real-time asset context update (funding rate, mark price, etc.)
     ActiveAssetCtx { coin: String, ctx: AssetContext },
+    /// Real-time spot asset context update (funding rate, mark price, etc.)
+    ActiveSpotAssetCtx { coin: String, ctx: SpotAssetContext },
     /// Real-time user asset limits/leverage for a perp asset
     ActiveAssetData(ActiveAssetData),
     /// Frontend aggregate user snapshot (dynamic schema)
@@ -2500,6 +2502,27 @@ impl AssetContext {
     pub fn is_negative(&self) -> bool {
         self.funding < Decimal::ZERO
     }
+}
+
+/// Real-time spot asset context from activeSpotAssetCtx WebSocket subscription.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpotAssetContext {
+    /// Mark price (used for liquidations)
+    #[serde(with = "rust_decimal::serde::str_option", default)]
+    pub mark_px: Option<Decimal>,
+    /// Mid price between best bid/ask
+    #[serde(with = "rust_decimal::serde::str_option", default)]
+    pub mid_px: Option<Decimal>,
+    /// Previous day closing price
+    #[serde(with = "rust_decimal::serde::str")]
+    pub prev_day_px: Decimal,
+    /// 24h notional quote volume
+    #[serde(with = "rust_decimal::serde::str")]
+    pub day_ntl_vlm: Decimal,
+    /// 24h notional base volume
+    #[serde(with = "rust_decimal::serde::str")]
+    pub day_base_vlm: Decimal,
 }
 
 /// User balance.
