@@ -493,8 +493,8 @@ where
         Ok(positions)
     }
 
-    /// Get the pool address.
-    pub async fn get_pool_addres(
+    /// Resolves the Uniswap V3 pool contract for `token0`, `token1`, and `fee`.
+    pub async fn get_pool_address(
         &self,
         token0: Address,
         token1: Address,
@@ -512,6 +512,17 @@ where
             .aggregate()
             .await?;
         Ok(address)
+    }
+
+    /// Misspelled alias of [`Self::get_pool_address`].
+    #[deprecated(since = "0.2.9", note = "use get_pool_address instead")]
+    pub async fn get_pool_addres(
+        &self,
+        token0: Address,
+        token1: Address,
+        fee: u32,
+    ) -> Result<Address> {
+        self.get_pool_address(token0, token1, fee).await
     }
 
     /// Get the price from a pool.

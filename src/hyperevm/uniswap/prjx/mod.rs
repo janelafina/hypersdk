@@ -49,7 +49,7 @@ mod tests {
     async fn test_pool() {
         let client = mainnet().await.unwrap();
         let addy = client
-            .get_pool_addres(hyperevm::WHYPE_ADDRESS, UBTC_ADDRESS, 3000)
+            .get_pool_address(hyperevm::WHYPE_ADDRESS, UBTC_ADDRESS, 3000)
             .await
             .unwrap();
         assert_eq!(addy, address!("0x0D6ECB912b6ee160e95Bc198b618Acc1bCb92525"))

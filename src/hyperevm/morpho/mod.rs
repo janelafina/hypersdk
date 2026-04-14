@@ -137,7 +137,8 @@ where
     /// Calculates the effective vault APY after fees.
     ///
     /// This is a weighted average of all underlying market APYs, adjusted for
-    /// the vault's management fee.
+    /// the vault's management fee. Components whose `supply_apy` does not fit in
+    /// `u128` are skipped instead of aborting the process.
     ///
     /// The return value is scaled to 18 decimals. Which means, if the
     /// APY of a vault is 4.20% the string representation of your decimal
@@ -211,7 +212,8 @@ where
 
                 // Convert shares to assets: shares * total_assets / total_shares = assets
                 let supplied_assets = supplied_shares * total_supply_assets / total_supply_shares;
-                let supply_apy = convert(U256::from(component.supply_apy.to_u128().unwrap()));
+                let supply_apy_raw = component.supply_apy.to_u128()?;
+                let supply_apy = convert(U256::from(supply_apy_raw));
                 Some(supplied_assets * supply_apy / total_deposits)
             })
             .fold(zero, |acc, x| acc + x);
