@@ -154,7 +154,10 @@ impl Client {
 
     #[must_use]
     pub fn with_http_client(self, http_client: reqwest::Client) -> Self {
-        Self { http_client, ..self }
+        Self {
+            http_client,
+            ..self
+        }
     }
 
     /// Returns the chain this client is configured for.
@@ -364,17 +367,20 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let data = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::FrontendOpenOrders {
-                user,
-                dex: dex_name,
-            })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::FrontendOpenOrders {
+            user,
+            dex: dex_name,
+        };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let data =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
 
         Ok(data)
     }
@@ -402,14 +408,17 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let data = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::AllMids { dex: dex_name })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::AllMids { dex: dex_name };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let data =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
 
         Ok(data)
     }
@@ -419,14 +428,17 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let data = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::HistoricalOrders { user })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::HistoricalOrders { user };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let data =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
 
         Ok(data)
     }
@@ -436,14 +448,17 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let data = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::UserFills { user })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::UserFills { user };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let data =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
 
         Ok(data)
     }
@@ -458,18 +473,21 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let data = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::UserFillsByTime {
-                user,
-                start_time,
-                end_time,
-            })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::UserFillsByTime {
+            user,
+            start_time,
+            end_time,
+        };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let data =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
 
         Ok(data)
     }
@@ -491,14 +509,17 @@ impl Client {
             UnknownOid,
         }
 
-        let data: Response = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::OrderStatus { user, oid })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::OrderStatus { user, oid };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let data: Response =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
 
         Ok(match data {
             Response::Order { order } => Some(order),
@@ -564,15 +585,21 @@ impl Client {
             start_time,
             end_time,
         };
-
-        let data = self
+        let res = self
             .http_client
             .post(api_url)
             .json(&InfoRequest::CandleSnapshot { req })
             .send()
-            .await?
-            .json()
             .await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let data =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
 
         Ok(data)
     }
@@ -607,14 +634,17 @@ impl Client {
             balances: Vec<UserBalance>,
         }
 
-        let data: Balances = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::SpotClearinghouseState { user })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::SpotClearinghouseState { user };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let data: Balances =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
 
         Ok(data.balances)
     }
@@ -646,14 +676,17 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let data = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::UserFees { user })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::UserFees { user };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let data =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
 
         Ok(data)
     }
@@ -704,17 +737,20 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let data = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::ClearinghouseState {
-                user,
-                dex: dex_name,
-            })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::ClearinghouseState {
+            user,
+            dex: dex_name,
+        };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let data =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
         Ok(data)
     }
 
@@ -764,18 +800,21 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let data = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::FundingHistory {
-                coin: coin.into(),
-                start_time,
-                end_time,
-            })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::FundingHistory {
+            coin: coin.into(),
+            start_time,
+            end_time,
+        };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let data =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
 
         Ok(data)
     }
@@ -816,14 +855,17 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let resp = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::UserToMultiSigSigners { user })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::UserToMultiSigSigners { user };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let resp =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
         Ok(resp)
     }
 
@@ -852,14 +894,17 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let resp = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::ExtraAgents { user })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::ExtraAgents { user };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let resp =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
         Ok(resp)
     }
 
@@ -906,17 +951,20 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let resp = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::VaultDetails {
-                vault_address,
-                user,
-            })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::VaultDetails {
+            vault_address,
+            user,
+        };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let resp =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
         Ok(resp)
     }
 
@@ -952,14 +1000,17 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let resp = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::UserVaultEquities { user })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::UserVaultEquities { user };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let resp =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
         Ok(resp)
     }
 
@@ -1001,14 +1052,17 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let resp = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::UserRole { user })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::UserRole { user };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let resp =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
         Ok(resp)
     }
 
@@ -1057,14 +1111,17 @@ impl Client {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
-        let resp = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::SubAccounts { user })
-            .send()
-            .await?
-            .json()
-            .await?;
+        let req = InfoRequest::SubAccounts { user };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let resp =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
         Ok(resp)
     }
 
@@ -1513,7 +1570,11 @@ impl Client {
         let usd_raw = (usd * rust_decimal::Decimal::from(1_000_000))
             .to_u64()
             .ok_or_else(|| anyhow::anyhow!("vault_transfer: usd amount out of range: {usd}"))?;
-        let action = VaultTransfer { vault_address, is_deposit, usd: usd_raw };
+        let action = VaultTransfer {
+            vault_address,
+            is_deposit,
+            usd: usd_raw,
+        };
         let resp = self
             .sign_and_send_sync(signer, action, nonce, None, None)
             .await?;
@@ -1827,10 +1888,19 @@ impl Client {
             // .body(text)
             .json(&req)
             .send()
-            .await?
-            .json()
             .await?;
-        Ok(res)
+
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let parsed =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
+
+        Ok(parsed)
     }
 
     // TODO: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#retrieve-a-users-subaccounts
