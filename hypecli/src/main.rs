@@ -4,6 +4,7 @@ mod markets;
 mod morpho;
 mod multisig;
 mod orders;
+mod positions;
 mod prio;
 mod send;
 mod subscribe;
@@ -19,6 +20,7 @@ use markets::{DexesCmd, PerpsCmd, SpotCmd};
 use morpho::{MorphoApyCmd, MorphoPositionCmd, MorphoVaultApyCmd};
 use multisig::MultiSigCmd;
 use orders::OrderCmd;
+use positions::PositionsCmd;
 use prio::PrioCmd;
 use send::SendCmd;
 use subscribe::SubscribeCmd;
@@ -74,6 +76,8 @@ enum Command {
     /// Vault deposit and withdrawal commands
     #[command(subcommand)]
     Vault(VaultCmd),
+    /// Query open perpetual positions for a user
+    Positions(PositionsCmd),
     /// Gossip priority auction: query status or place a bid
     #[command(subcommand)]
     Prio(PrioCmd),
@@ -96,6 +100,7 @@ impl Command {
             Self::Subscribe(cmd) => cmd.run().await,
             Self::Send(cmd) => cmd.run().await,
             Self::Vault(cmd) => cmd.run().await,
+            Self::Positions(cmd) => cmd.run().await,
             Self::Prio(cmd) => cmd.run().await,
         }
     }
@@ -240,6 +245,19 @@ Query Morpho APY:
 
 Query Morpho Vault APY:
   hypecli morpho-vault-apy --vault <VAULT_ADDRESS>
+
+Query Open Positions:
+  hypecli positions <ADDRESS>
+  hypecli positions <ADDRESS> --format table
+  hypecli positions <ADDRESS> --coin BTC --format json
+
+  Options:
+  --coin <SYMBOL>       Filter to a specific coin (e.g., BTC, ETH)
+  --dex <NAME>          Query a HIP-3 DEX instead of the default perp DEX
+  --format <pretty|table|json>  Output format (default: pretty)
+
+  Shows size, side, entry price, unrealized PnL, leverage, liquidation price,
+  margin used, and cumulative funding for each open position.
 
 ORDER COMMANDS
 --------------
