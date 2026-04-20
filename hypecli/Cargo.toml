@@ -19,8 +19,8 @@ include = [
   "Cargo.toml"
 ]
 
-[patch.crates-io]
-hypersdk = { path = ".." }
+# [patch.crates-io]
+# hypersdk = { path = ".." }
 
 [dependencies]
 hypersdk = { version = "0.2" }
