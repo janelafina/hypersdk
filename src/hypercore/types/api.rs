@@ -6,7 +6,7 @@
 
 use alloy::{
     dyn_abi::TypedData,
-    primitives::{Address, B256},
+    primitives::{Address, B256, U256},
     signers::{Signer, SignerSync, k256::ecdsa::RecoveryId},
 };
 use chrono::{DateTime, Utc};
@@ -97,6 +97,8 @@ pub enum Action {
     MultiSig(MultiSigAction),
     /// Invalidate a request.
     Noop,
+    /// Gossip priority bid (Dutch auction for read priority).
+    GossipPriorityBid(GossipPriorityBid),
 }
 
 impl Action {
@@ -198,7 +200,8 @@ impl Action {
             | Action::UpdateIsolatedMargin(_)
             | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
-            | Action::Noop => {
+            | Action::Noop
+            | Action::GossipPriorityBid(_) => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
                 let agent = solidity::Agent {
                     source: if chain.is_mainnet() { "a" } else { "b" }.to_string(),
@@ -290,7 +293,8 @@ impl Action {
             | Action::UpdateIsolatedMargin(_)
             | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
-            | Action::Noop => {
+            | Action::Noop
+            | Action::GossipPriorityBid(_) => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
                 let agent = solidity::Agent {
                     source: if chain.is_mainnet() { "a" } else { "b" }.to_string(),
@@ -380,7 +384,8 @@ impl Action {
             | Action::UpdateIsolatedMargin(_)
             | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
-            | Action::Noop => {
+            | Action::Noop
+            | Action::GossipPriorityBid(_) => {
                 let expires_after =
                     maybe_expires_after.map(|after| after.timestamp_millis() as u64);
                 let connection_id = self
@@ -703,6 +708,23 @@ pub struct VaultTransfer {
     pub is_deposit: bool,
     /// Amount of USDC in micro-units (1 USD = 1,000,000).
     pub usd: u64,
+}
+
+/// Gossip priority bid action.
+///
+/// Bids on a Dutch auction slot for read-priority gossip data. Lower slotId = higher
+/// priority. Fees are deducted from the spot HYPE balance and burned.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GossipPriorityBid {
+    /// Slot index (0–4). Lower index = higher priority (~10ms faster per slot).
+    pub slot_id: u8,
+    /// IP address to receive prioritized gossip data.
+    pub ip: String,
+    /// Maximum HYPE to bid in wei (1 HYPE = 1e18 wei).
+    pub max_gas: U256,
 }
 
 /// Multi-signature action payload.
