@@ -45,7 +45,7 @@ use std::{
 };
 
 use alloy::{
-    primitives::Address,
+    primitives::{Address, U256},
     signers::{Signer, SignerSync},
 };
 use anyhow::{Result, anyhow};
@@ -57,11 +57,11 @@ use url::Url;
 
 use super::{AssetTarget, signing::*};
 use crate::hypercore::{
-    ActionError, ApiAgent, CandleInterval, Chain, Cloid, Dex, MultiSigConfig, OidOrCloid,
-    OutcomeMeta, PerpMarket, Signature, SpotMarket, SpotToken,
+    ActionError, ApiAgent, CandleInterval, Chain, Cloid, Dex, GossipPriorityAuctionStatus,
+    MultiSigConfig, OidOrCloid, OutcomeMeta, PerpMarket, Signature, SpotMarket, SpotToken,
     api::{
-        Action, ActionRequest, ApproveAgent, ConvertToMultiSigUser, OkResponse, Response,
-        SignersConfig, UpdateLeverage, VaultTransfer,
+        Action, ActionRequest, ApproveAgent, ConvertToMultiSigUser, GossipPriorityBid,
+        OkResponse, Response, SignersConfig, UpdateLeverage, VaultTransfer,
     },
     mainnet_url, testnet_url,
     types::{
@@ -1123,6 +1123,66 @@ impl Client {
         let resp =
             serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
         Ok(resp)
+    }
+
+    /// Place a gossip priority bid (Dutch auction for read priority).
+    ///
+    /// This is a **signed action** sent to `/exchange`. Fees are deducted from your
+    /// spot HYPE balance and burned. Lower `slot_id` = higher priority (~10ms faster
+    /// per slot). There are 5 slots (0–4), each running a Dutch auction on a
+    /// synchronized 3-minute schedule.
+    ///
+    /// `max_gas` is in **wei of HYPE** — 1 HYPE = 1e18 wei. Example: `50 HYPE`
+    /// = `U256::from(50u128) * U256::from(1e18)`.
+    ///
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>
+    pub async fn gossip_priority_bid<S: SignerSync>(
+        &self,
+        signer: &S,
+        slot_id: u8,
+        ip: impl Into<String>,
+        max_gas: U256,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> Result<Response> {
+        self.sign_and_send_sync(
+            signer,
+            GossipPriorityBid {
+                slot_id,
+                ip: ip.into(),
+                max_gas,
+            },
+            nonce,
+            vault_address,
+            expires_after,
+        )
+        .await
+    }
+
+    /// Query the current gossip priority auction status.
+    ///
+    /// Returns winning prices, time remaining, and winners for all 5 slots.
+    /// Use this to decide how much to bid before calling [`Self::gossip_priority_bid`].
+    ///
+    /// This is an unsigned info request sent to `/info`.
+    pub async fn gossip_priority_auction_status(&self) -> Result<GossipPriorityAuctionStatus> {
+        let mut api_url = self.base_url.clone();
+        api_url.set_path("/info");
+
+        let req = InfoRequest::GossipPriorityAuctionStatus;
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        let data =
+            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
+
+        Ok(data)
     }
 
     /// Schedule cancellation.
