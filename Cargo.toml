@@ -159,6 +159,22 @@ path = "examples/uniswap/pools_created.rs"
 name = "uniswap_prjx_flows"
 path = "examples/uniswap/prjx_flows.rs"
 
+[[example]]
+name = "dwellir_l4"
+path = "examples/hypercore/dwellir_l4.rs"
+
+[[example]]
+name = "dwellir_fills"
+path = "examples/hypercore/dwellir_fills.rs"
+
+[[example]]
+name = "dwellir_l4_smoke"
+path = "examples/hypercore/dwellir_l4_smoke.rs"
+
+[[example]]
+name = "dwellir_fills_smoke"
+path = "examples/hypercore/dwellir_fills_smoke.rs"
+
 ## Documentation (docs.rs) configuration
 [package.metadata.docs.rs]
 all-features = true
@@ -185,6 +201,9 @@ yawc = { version = "0.3", features = ["simd"] }
 hex-literal = "0.4"
 chrono = { version = "0.4", features = ["now"] }
 num-traits = "0.2"
+prost = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
+tonic = { version = "0.12", default-features = false, features = ["channel", "codegen", "prost", "tls", "tls-webpki-roots"] }
 
 ## Development and test dependencies
 [dev-dependencies]
