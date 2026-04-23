@@ -178,7 +178,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Subscribe to market data
     ws.subscribe(Subscription::Trades { coin: "BTC".into() });
-    ws.subscribe(Subscription::L2Book { coin: "ETH".into() });
+    ws.subscribe(Subscription::L2Book {
+        coin: "ETH".into(),
+        n_sig_figs: None,
+        mantissa: None,
+    });
 
     // Optional: user streams
     let user: Address = "0x1234567890abcdef1234567890abcdef12345678".parse()?;

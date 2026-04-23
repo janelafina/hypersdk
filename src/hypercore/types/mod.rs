@@ -311,7 +311,15 @@ pub enum Subscription {
     Trades { coin: String },
     /// Order book snapshots and updates
     #[display("l2Book({coin})")]
-    L2Book { coin: String },
+    L2Book {
+        coin: String,
+        /// Aggregate price levels to this many significant figures (valid: 2-5; `None` for full precision).
+        #[serde(default, rename = "nSigFigs", skip_serializing_if = "Option::is_none")]
+        n_sig_figs: Option<u8>,
+        /// Further aggregation; only valid when `n_sig_figs` is `5` (values: 1, 2, or 5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mantissa: Option<u8>,
+    },
     /// Real-time candlestick updates
     #[display("candle({coin}@{interval})")]
     Candle { coin: String, interval: String },
