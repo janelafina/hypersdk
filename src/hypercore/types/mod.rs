@@ -31,6 +31,7 @@
 //! - [`UsdSend`]: Send USDC from perp balance
 //! - [`SpotSend`]: Send spot tokens
 //! - [`SendAsset`]: Send assets between accounts/DEXes
+//! - [`AgentSendAsset`]: Agent-signed self-transfer across DEXes/subaccounts
 //!
 //! ## API Response Types
 //! - [`OrderResponseStatus`]: Result of order submission
@@ -92,7 +93,7 @@ pub use api::{
     Action, ActionRequest, GossipPriorityBid, MultiSigAction, MultiSigPayload, OkResponse, Response,
 };
 // Import from raw module (which is now a submodule)
-use api::{SendAssetAction, SpotSendAction, UsdSendAction};
+use api::{AgentSendAssetAction, SendAssetAction, SpotSendAction, UsdSendAction};
 
 fn decimal_from_json_value(value: &serde_json::Value) -> Result<Decimal, String> {
     match value {
@@ -1834,6 +1835,51 @@ impl SendAsset {
         SendAssetAction {
             signature_chain_id: chain.arbitrum_id().to_owned(),
             hyperliquid_chain: chain,
+            destination: self.destination,
+            source_dex: self.source_dex.to_string(),
+            destination_dex: self.destination_dex.to_string(),
+            token: self.token.to_string(),
+            amount: self.amount,
+            from_sub_account: self.from_sub_account,
+            nonce: self.nonce,
+        }
+    }
+}
+
+/// Agent-signed variant of [`SendAsset`] (inner data).
+///
+/// Similar to [`SendAsset`] but signed by an agent (API wallet) using L1-action
+/// signing. The destination is fixed to the source address, so this is
+/// restricted to self-transfers across DEXes, the spot balance, or between
+/// subaccounts owned by the same master account.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#agent-send-asset>
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSendAsset {
+    /// The destination address (must equal the signer's source address).
+    pub destination: Address,
+    /// Source DEX.
+    #[serde_as(as = "DisplayFromStr")]
+    pub source_dex: AssetTarget,
+    /// Destination DEX.
+    #[serde_as(as = "DisplayFromStr")]
+    pub destination_dex: AssetTarget,
+    /// Token.
+    pub token: SendToken,
+    /// Amount to send.
+    pub amount: Decimal,
+    /// Source subaccount address, or empty string if sending from the main account.
+    pub from_sub_account: String,
+    /// Request nonce (timestamp in ms); must match the outer request nonce.
+    pub nonce: u64,
+}
+
+impl AgentSendAsset {
+    /// Converts this into a signable [`AgentSendAssetAction`].
+    #[must_use]
+    pub fn into_action(self) -> AgentSendAssetAction {
+        AgentSendAssetAction {
             destination: self.destination,
             source_dex: self.source_dex.to_string(),
             destination_dex: self.destination_dex.to_string(),
