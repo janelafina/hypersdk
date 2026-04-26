@@ -79,6 +79,8 @@ pub enum Action {
     UsdSend(UsdSendAction),
     /// Send asset.
     SendAsset(SendAssetAction),
+    /// Agent-signed send asset (destination must equal source).
+    AgentSendAsset(AgentSendAssetAction),
     /// Spot send.
     SpotSend(SpotSendAction),
     /// EVM user modify.
@@ -201,6 +203,7 @@ impl Action {
             | Action::UpdateIsolatedMargin(_)
             | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
+            | Action::AgentSendAsset(_)
             | Action::Noop
             | Action::GossipPriorityBid(_) => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
@@ -294,6 +297,7 @@ impl Action {
             | Action::UpdateIsolatedMargin(_)
             | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
+            | Action::AgentSendAsset(_)
             | Action::Noop
             | Action::GossipPriorityBid(_) => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
@@ -385,6 +389,7 @@ impl Action {
             | Action::UpdateIsolatedMargin(_)
             | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
+            | Action::AgentSendAsset(_)
             | Action::Noop
             | Action::GossipPriorityBid(_) => {
                 let expires_after =
@@ -602,6 +607,38 @@ pub struct SendAssetAction {
     /// From subaccount, can be empty
     pub from_sub_account: String,
     /// Request nonce
+    pub nonce: u64,
+}
+
+/// Agent-signed send asset.
+///
+/// Similar to [`SendAssetAction`] but signed with an agent (API wallet) using
+/// L1-action signing (msgpack + `Agent` wrapper). The `destination` must equal
+/// the source address, so this is restricted to self-transfers across DEXes,
+/// the spot balance, or between subaccounts.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#agent-send-asset>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSendAssetAction {
+    /// The destination address (must equal the source address).
+    #[serde(
+        serialize_with = "crate::hypercore::utils::serialize_address_as_hex",
+        deserialize_with = "crate::hypercore::utils::deserialize_address_from_hex"
+    )]
+    pub destination: Address,
+    /// Source DEX, empty string for the default USDC perp DEX or "spot" for spot.
+    pub source_dex: String,
+    /// Destination DEX, empty string for the default USDC perp DEX or "spot" for spot.
+    pub destination_dex: String,
+    /// Token, e.g. `"PURR:0xc4bf3f870c0e9465323c0b6ed28096c2"`.
+    pub token: String,
+    /// Amount to send.
+    #[serde(with = "rust_decimal::serde::str")]
+    pub amount: Decimal,
+    /// Source subaccount address, or empty string if sending from the main account.
+    pub from_sub_account: String,
+    /// Request nonce (timestamp in ms); must match the outer nonce.
     pub nonce: u64,
 }
 
@@ -939,6 +976,42 @@ mod tests {
             assert_eq!(vt.usd, 100_500_000);
         } else {
             panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn agent_send_asset_serialization() {
+        use rust_decimal::dec;
+
+        let action = Action::AgentSendAsset(AgentSendAssetAction {
+            destination: address!("0x5eCb62791B22A3108367c2A2024019Ee7eA88431"),
+            source_dex: String::new(),
+            destination_dex: "spot".to_string(),
+            token: "PURR:0xc4bf3f870c0e9465323c0b6ed28096c2".to_string(),
+            amount: dec!(0.01),
+            from_sub_account: String::new(),
+            nonce: 1_700_000_000_000,
+        });
+
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"agentSendAsset\""));
+        assert!(json.contains("\"destination\":\"0x5ecb62791b22a3108367c2a2024019ee7ea88431\""));
+        assert!(json.contains("\"sourceDex\":\"\""));
+        assert!(json.contains("\"destinationDex\":\"spot\""));
+        assert!(json.contains("\"token\":\"PURR:0xc4bf3f870c0e9465323c0b6ed28096c2\""));
+        assert!(json.contains("\"amount\":\"0.01\""));
+        assert!(json.contains("\"fromSubAccount\":\"\""));
+        assert!(json.contains("\"nonce\":1700000000000"));
+
+        let deserialized: Action = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Action::AgentSendAsset(inner) => {
+                assert_eq!(inner.source_dex, "");
+                assert_eq!(inner.destination_dex, "spot");
+                assert_eq!(inner.nonce, 1_700_000_000_000);
+                assert_eq!(inner.amount, dec!(0.01));
+            }
+            _ => panic!("wrong variant"),
         }
     }
 

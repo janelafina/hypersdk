@@ -65,10 +65,10 @@ use crate::hypercore::{
     },
     mainnet_url, testnet_url,
     types::{
-        BasicOrder, BatchCancel, BatchCancelCloid, BatchModify, BatchOrder, ClearinghouseState,
-        Fill, FundingRate, InfoRequest, OrderResponseStatus, OrderUpdate, ScheduleCancel,
-        SendAsset, SendToken, SpotSend, SubAccount, UsdSend, UserBalance, UserFees, UserRole,
-        UserVaultEquity, VaultDetails,
+        AgentSendAsset, BasicOrder, BatchCancel, BatchCancelCloid, BatchModify, BatchOrder,
+        ClearinghouseState, Fill, FundingRate, InfoRequest, OrderResponseStatus, OrderUpdate,
+        ScheduleCancel, SendAsset, SendToken, SpotSend, SubAccount, UsdSend, UserBalance,
+        UserFees, UserRole, UserVaultEquity, VaultDetails,
     },
 };
 
@@ -1663,6 +1663,34 @@ impl Client {
                     anyhow::bail!("send_asset: {err}")
                 }
                 _ => anyhow::bail!("send_asset: unexpected response type: {resp:?}"),
+            }
+        }
+    }
+
+    /// Agent-signed send asset.
+    ///
+    /// Same purpose as [`send_asset`](Self::send_asset) but signed by an agent
+    /// (API wallet) via L1-action signing. The destination must equal the
+    /// source address, so this is limited to self-transfers across DEXes, the
+    /// spot balance, or between subaccounts of the same master account.
+    ///
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#agent-send-asset>
+    pub fn agent_send_asset<S: SignerSync>(
+        &self,
+        signer: &S,
+        send: AgentSendAsset,
+        nonce: u64,
+    ) -> impl Future<Output = Result<()>> + Send + 'static {
+        let future = self.sign_and_send_sync(signer, send.into_action(), nonce, None, None);
+
+        async move {
+            let resp = future.await?;
+            match resp {
+                Response::Ok(OkResponse::Default) => Ok(()),
+                Response::Err(err) => {
+                    anyhow::bail!("agent_send_asset: {err}")
+                }
+                _ => anyhow::bail!("agent_send_asset: unexpected response type: {resp:?}"),
             }
         }
     }
