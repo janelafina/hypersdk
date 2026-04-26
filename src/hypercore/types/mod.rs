@@ -80,7 +80,7 @@ use alloy::{
     sol_types::eip712_domain,
 };
 use rust_decimal::Decimal;
-use serde::{de::Error, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error, ser::SerializeMap};
 use serde_with::{DisplayFromStr, serde_as};
 
 use crate::hypercore::{Chain, Cloid, OidOrCloid, SpotToken};
@@ -440,7 +440,9 @@ pub enum Incoming {
         user: Address,
         fills: Vec<Fill>,
     },
-    /// User events for a user (funding, liquidation, non-user-cancel)
+    /// User events for a user (fills, funding, liquidation, non-user-cancel).
+    /// Hyperliquid may send fill notifications on channel `"user"` instead of `"userEvents"`.
+    #[serde(alias = "user")]
     UserEvents(UserEvent),
     /// TWAP slice fill updates for a user
     UserTwapSliceFills(UserTwapSliceFills),
@@ -4176,5 +4178,50 @@ mod tests {
             parsed.grouping,
             OrderGrouping::PriorityRate(80_000)
         ));
+    }
+
+    #[test]
+    fn test_incoming_user_channel_fills() {
+        // Hyperliquid sends fill notifications on channel "user" (not "userEvents").
+        // The payload matches UserEvent::Fills — just a {"fills":[...]} object.
+        // This reproduces the real wire-format messages from production:
+        //   {"channel":"user","data":{"fills":[{"coin":"BTC",...}]}}
+        let json = r#"{
+            "channel": "user",
+            "data": {
+                "fills": [
+                    {
+                        "coin": "ETH",
+                        "px": "3500.50",
+                        "sz": "0.5",
+                        "side": "A",
+                        "time": 1700000000000,
+                        "startPosition": "1.0",
+                        "dir": "Close Short",
+                        "closedPnl": "125.50",
+                        "hash": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                        "oid": 1234567890,
+                        "crossed": false,
+                        "fee": "0.125",
+                        "tid": 9876543210,
+                        "feeToken": "USDC",
+                        "twapId": null
+                    }
+                ]
+            }
+        }"#;
+
+        let incoming: Incoming = serde_json::from_str(json).unwrap();
+        match incoming {
+            Incoming::UserEvents(UserEvent::Fills { fills }) => {
+                assert_eq!(fills.len(), 1);
+                assert_eq!(fills[0].coin, "ETH");
+                assert_eq!(fills[0].px.to_string(), "3500.50");
+                assert_eq!(fills[0].sz.to_string(), "0.5");
+            }
+            _ => {
+                panic!("Expected Incoming::UserEvents(UserEvent::Fills {{ .. }}), got {incoming:?}")
+            }
+        }
     }
 }
