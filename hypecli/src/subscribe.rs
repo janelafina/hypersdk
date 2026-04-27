@@ -264,8 +264,6 @@ impl OrderbookCmd {
         let mut ws = core.websocket();
         ws.subscribe(Subscription::L2Book {
             coin: resolved.coin.clone(),
-            n_sig_figs: None,
-            mantissa: None,
         });
 
         eprintln!("Subscribing to {} orderbook...", self.asset);
