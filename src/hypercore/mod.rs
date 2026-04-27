@@ -198,6 +198,29 @@ pub struct NonceHandler {
     nonce: AtomicU64,
 }
 
+/// An outcome order book — one tradable side of an outcome.
+///
+/// Each [`OutcomeInfo`] produces N order books (one per [`OutcomeSideSpec`]).
+/// The market index is derived from the outcome ID and side position:
+/// `outcome_id * 10 + side_index` where side_index is 0 for "Yes" and 1 otherwise.
+#[derive(Debug, Clone)]
+pub struct OutcomeMarket {
+    /// Outcome metadata
+    pub info: OutcomeInfo,
+    /// Side name (e.g., "Yes", "No")
+    pub side: String,
+    /// Calculated market index (`outcome * 10 + side_index`)
+    pub market: usize,
+}
+
+impl OutcomeMarket {
+    /// Exchange coin name used for WebSocket subscriptions (e.g., "#42").
+    #[must_use]
+    pub fn coin(&self) -> String {
+        format!("#{}", self.market)
+    }
+}
+
 impl Default for NonceHandler {
     fn default() -> Self {
         let now = Utc::now().timestamp_millis() as u64;
@@ -1247,6 +1270,54 @@ pub struct OutcomeMeta {
     pub questions: Vec<OutcomeQuestion>,
 }
 
+/// Parsed parameters for a recurring (automated) outcome event.
+///
+/// Recurring outcome descriptions follow the format:
+/// ```text
+/// class:priceBinary|underlying:BTC|expiry:20260428-0300|targetPrice:79133|period:1d
+/// ```
+///
+/// Use [`RecurringEvent::from_str`] to parse an [`OutcomeInfo::description`].
+/// Non-recurring outcomes (free-text descriptions) will return `None`.
+#[derive(Debug, Clone)]
+pub struct RecurringEvent {
+    /// The event class (e.g., "priceBinary")
+    pub class: String,
+    /// The underlying asset symbol (e.g., "BTC", "HYPE")
+    pub underlying: String,
+    /// Expiry in ISO-ish format (e.g., "20260428-0300")
+    pub expiry: String,
+    /// Target price as a string (e.g., "79133", "32.98")
+    pub target_price: Decimal,
+    /// Recurrence period (e.g., "1d", "15m")
+    pub period: String,
+}
+
+impl std::str::FromStr for RecurringEvent {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut map = std::collections::HashMap::new();
+        for part in s.split('|') {
+            let (key, value) = part
+                .split_once(':')
+                .context("missing ':' in key:value pair")?;
+            map.insert(key.to_string(), value.to_string());
+        }
+        Ok(RecurringEvent {
+            class: map.remove("class").context("missing 'class'")?,
+            underlying: map.remove("underlying").context("missing 'underlying'")?,
+            expiry: map.remove("expiry").context("missing 'expiry'")?,
+            target_price: map
+                .remove("targetPrice")
+                .context("missing 'targetPrice'")?
+                .parse()
+                .context("invalid targetPrice")?,
+            period: map.remove("period").context("missing 'period'")?,
+        })
+    }
+}
+
 async fn raw_spot_markets(
     core_url: impl IntoUrl,
     client: reqwest::Client,
@@ -1502,6 +1573,32 @@ pub async fn outcome_meta(
             })
             .collect(),
     })
+}
+
+/// Fetch all outcome markets, returning one [`OutcomeMarket`] per side.
+///
+/// The market index is calculated as `outcome * 10 + side_index` where
+/// "Yes" gets side index 0 and all other sides get 1.
+pub async fn outcomes(
+    core_url: impl IntoUrl,
+    client: reqwest::Client,
+) -> anyhow::Result<Vec<OutcomeMarket>> {
+    let meta = outcome_meta(core_url, client).await?;
+
+    let mut result = Vec::new();
+    for o in &meta.outcomes {
+        for side in &o.side_specs {
+            let is_yes = side.name == "Yes";
+            let market = (o.outcome as usize) * 10 + usize::from(!is_yes);
+            result.push(OutcomeMarket {
+                info: o.clone(),
+                side: side.name.clone(),
+                market,
+            });
+        }
+    }
+
+    Ok(result)
 }
 
 #[derive(Deserialize)]
@@ -1921,7 +2018,12 @@ mod tests {
         assert!(!meta.outcomes.is_empty());
         // Each outcome should have exactly 2 sides
         for o in &meta.outcomes {
-            assert_eq!(o.side_specs.len(), 2, "outcome {} should have 2 sides", o.outcome);
+            assert_eq!(
+                o.side_specs.len(),
+                2,
+                "outcome {} should have 2 sides",
+                o.outcome
+            );
         }
     }
 

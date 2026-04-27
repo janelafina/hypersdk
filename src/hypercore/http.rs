@@ -340,6 +340,30 @@ impl Client {
         super::outcome_meta(self.base_url.clone(), self.http_client.clone()).await
     }
 
+    /// Fetch all outcome markets, one per side.
+    ///
+    /// Returns a list of [`super::OutcomeMarket`] with the market index
+    /// derived from outcome ID and side position.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hypersdk::hypercore;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let client = hypercore::testnet();
+    /// let markets = client.outcomes().await?;
+    /// for m in markets {
+    ///     println!("{}: O{} {} (market {})", m.coin(), m.info.outcome, m.side, m.market);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub async fn outcomes(&self) -> Result<Vec<super::OutcomeMarket>> {
+        super::outcomes(self.base_url.clone(), self.http_client.clone()).await
+    }
+
     /// Returns all open orders for a user.
     ///
     /// # Example
