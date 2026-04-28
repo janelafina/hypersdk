@@ -201,23 +201,26 @@ pub struct NonceHandler {
 /// An outcome order book — one tradable side of an outcome.
 ///
 /// Each [`OutcomeInfo`] produces N order books (one per [`OutcomeSideSpec`]).
-/// The market index is derived from the outcome ID and side position:
-/// `outcome_id * 10 + side_index` where side_index is 0 for "Yes" and 1 otherwise.
+/// The market field stores the Hyperliquid asset index directly:
+/// `100_000_000 + outcome_id * 10 + side_index` where side_index is 0 for "Yes" and 1 otherwise.
 #[derive(Debug, Clone)]
 pub struct OutcomeMarket {
     /// Outcome metadata
     pub info: OutcomeInfo,
     /// Side name (e.g., "Yes", "No")
     pub side: String,
-    /// Calculated market index (`outcome * 10 + side_index`)
+    /// Hyperliquid asset index (usable directly in orders)
     pub market: usize,
 }
 
 impl OutcomeMarket {
     /// Exchange coin name used for WebSocket subscriptions (e.g., "#42").
+    ///
+    /// Strips the outcome namespace offset from the asset index to get the
+    /// raw encoding (`outcome * 10 + side_index`).
     #[must_use]
     pub fn coin(&self) -> String {
-        format!("#{}", self.market)
+        format!("#{}", self.market - 100_000_000)
     }
 }
 
@@ -1589,7 +1592,7 @@ pub async fn outcomes(
     for o in &meta.outcomes {
         for side in &o.side_specs {
             let is_yes = side.name == "Yes";
-            let market = (o.outcome as usize) * 10 + usize::from(!is_yes);
+            let market = 100_000_000 + (o.outcome as usize) * 10 + usize::from(!is_yes);
             result.push(OutcomeMarket {
                 info: o.clone(),
                 side: side.name.clone(),
