@@ -55,6 +55,28 @@ sol! {
         bytes32 multiSigActionHash;
         uint64 nonce;
     }
+
+    /// User-signed DEX abstraction action.
+    ///
+    /// Enables or disables DEX abstraction for a given user address.
+    /// EIP-712 type: `HyperliquidTransaction:UserDexAbstraction`.
+    struct UserDexAbstraction {
+        string hyperliquidChain;
+        address user;
+        bool enabled;
+        uint64 nonce;
+    }
+
+    /// User-signed set-abstraction action.
+    ///
+    /// Sets the account abstraction mode for a given user address.
+    /// EIP-712 type: `HyperliquidTransaction:UserSetAbstraction`.
+    struct UserSetAbstraction {
+        string hyperliquidChain;
+        address user;
+        string abstraction;
+        uint64 nonce;
+    }
 }
 
 /// Multisig-specific EIP-712 struct definitions.

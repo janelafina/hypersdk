@@ -65,10 +65,11 @@ use crate::hypercore::{
     },
     mainnet_url, testnet_url,
     types::{
-        AgentSendAsset, BasicOrder, BatchCancel, BatchCancelCloid, BatchModify, BatchOrder,
-        ClearinghouseState, Fill, FundingRate, InfoRequest, OrderResponseStatus, OrderUpdate,
-        ScheduleCancel, SendAsset, SendToken, SpotSend, SubAccount, UsdSend, UserBalance,
-        UserFees, UserRole, UserVaultEquity, VaultDetails,
+        AbstractionMode, AgentSendAsset, BasicOrder, BatchCancel, BatchCancelCloid, BatchModify,
+        BatchOrder, ClearinghouseState, Fill, FundingRate, InfoRequest, OrderResponseStatus,
+        OrderUpdate, ScheduleCancel, SendAsset, SendToken, SpotSend, SubAccount, UsdSend,
+        UserBalance, UserFees, UserRole, UserSetAbstractionAction,
+        UserVaultEquity, VaultDetails,
     },
 };
 
@@ -1854,6 +1855,144 @@ impl Client {
                 anyhow::bail!("noop: {err}")
             }
             _ => anyhow::bail!("noop: unexpected response type: {resp:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Account Abstraction Mode actions
+    // -----------------------------------------------------------------
+
+    /// Query the current account abstraction mode for a user.
+    ///
+    /// Sends an info request to `/info` with type `"abstraction"`.
+    /// Returns the current mode as parsed by [`AbstractionMode`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hypersdk::hypercore;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let client = hypercore::mainnet();
+    /// let user: hypersdk::Address = "0x...".parse()?;
+    /// let mode = client.abstraction_mode(user).await?;
+    /// println!("Current mode: {mode}");
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#retrieve-abstraction-mode>
+    pub async fn abstraction_mode(&self, user: Address) -> Result<AbstractionMode> {
+        let mut api_url = self.base_url.clone();
+        api_url.set_path("/info");
+
+        let req = InfoRequest::AbstractionMode { user };
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let text = res.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status} body={text}"));
+        }
+
+        // Response is a plain string like "unifiedAccount" or "disabled"
+        let s = serde_json::from_str::<String>(&text)
+            .map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
+        AbstractionMode::from_api_str(&s)
+            .map_err(|e| anyhow!("failed to parse abstraction mode: {e}"))
+    }
+
+    /// Set abstraction mode via agent-signed action (L1/RMP signing).
+    ///
+    /// Changes the account's abstraction mode to one of:
+    /// - [`AbstractionMode::Standard`] (`"i"`): Separate perp/spot balances
+    /// - [`AbstractionMode::UnifiedAccount`] (`"u"`): Unified per-asset balance
+    /// - [`AbstractionMode::PortfolioMargin`] (`"p"`): Portfolio margin (pre-alpha)
+    ///
+    /// This uses RMP-based signing (Agent wrapper) — suitable for API wallets / agents.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The agent/API wallet signer
+    /// - `mode`: The target abstraction mode
+    /// - `nonce`: Unique nonce (typically current timestamp in ms)
+    /// - `vault_address`: Optional subaccount/vault address
+    /// - `expires_after`: Optional expiration time
+    ///
+    /// # Important Notes
+    ///
+    /// - Builder code addresses **must** be in Standard mode to accrue builder fees
+    /// - Unified Account and Portfolio Margin have a 50k daily action limit
+    /// - Standard mode has no action limits
+    ///
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#set-account-abstraction-mode-agent-signed>
+    pub async fn agent_set_abstraction<S: SignerSync>(
+        &self,
+        signer: &S,
+        mode: AbstractionMode,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        let action = Action::AgentSetAbstraction { abstraction: mode };
+        let resp = self
+            .sign_and_send_sync(signer, action, nonce, vault_address, expires_after)
+            .await?;
+
+        match resp {
+            Response::Ok(OkResponse::Default) => Ok(()),
+            Response::Err(err) => anyhow::bail!("agent_set_abstraction: {err}"),
+            _ => anyhow::bail!("agent_set_abstraction: unexpected response type: {resp:?}"),
+        }
+    }
+
+    /// Set abstraction mode via user-signed action (EIP-712 signing).
+    ///
+    /// User-signed variant: requires EIP-712 signing with the `HyperliquidSignTransaction` domain.
+    /// This is used when the main account owner wants to change their own abstraction mode
+    /// directly (not through an API agent).
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The account owner's signer (must match the `user` address)
+    /// - `user`: The user address to set the mode for (lowercase hex)
+    /// - `mode`: The target abstraction mode
+    /// - `nonce`: Unique nonce (typically current timestamp in ms)
+    ///
+    /// Note: user-signed actions do not support `vault_address` or `expires_after`.
+    ///
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#set-account-abstraction-mode-user-signed>
+    pub async fn user_set_abstraction<S: Signer + Send + Sync>(
+        &self,
+        signer: &S,
+        user: Address,
+        mode: AbstractionMode,
+        nonce: u64,
+    ) -> Result<()> {
+        let signature_chain_id = self.chain.arbitrum_id().to_owned();
+
+        let action = UserSetAbstractionAction {
+            signature_chain_id,
+            hyperliquid_chain: self.chain,
+            user,
+            abstraction: mode,
+            nonce,
+        };
+
+        let resp = self
+            .sign_and_send(
+                signer,
+                Action::UserSetAbstraction(action),
+                nonce,
+                None,
+                None,
+            )
+            .await?;
+
+        match resp {
+            Response::Ok(OkResponse::Default) => Ok(()),
+            Response::Err(err) => anyhow::bail!("user_set_abstraction: {err}"),
+            _ => anyhow::bail!("user_set_abstraction: unexpected response type: {resp:?}"),
         }
     }
 

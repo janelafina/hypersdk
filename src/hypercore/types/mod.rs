@@ -91,7 +91,9 @@ pub(super) mod solidity;
 // Re-export important raw types for convenience
 pub use api::{
     Action, ActionRequest, GossipPriorityBid, MultiSigAction, MultiSigPayload, OkResponse, Response,
+    UserDexAbstractionAction, UserSetAbstractionAction,
 };
+pub use api::AbstractionMode;
 // Import from raw module (which is now a submodule)
 use api::{AgentSendAssetAction, SendAssetAction, SpotSendAction, UsdSendAction};
 
@@ -3381,6 +3383,10 @@ pub(super) enum InfoRequest {
     OutcomeMeta,
     /// Query gossip priority auction status.
     GossipPriorityAuctionStatus,
+    /// Query account abstraction mode for a user.
+    AbstractionMode {
+        user: Address,
+    },
 }
 
 #[cfg(test)]
