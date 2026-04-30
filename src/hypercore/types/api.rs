@@ -4,8 +4,6 @@
 //! used for interacting with the Hyperliquid exchange API. These types handle
 //! signing, serialization, and API communication.
 
-use std::fmt;
-
 use alloy::{
     dyn_abi::TypedData,
     primitives::{Address, B256},
@@ -808,7 +806,7 @@ pub struct VaultTransfer {
 ///   Limited to 50k user actions per day.
 /// - **PortfolioMargin** (`"p"` / `"portfolioMargin"`): Most capital-efficient. Pre-alpha.
 ///   Limited to 50k user actions per day.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, derive_more::Display)]
 pub enum AbstractionMode {
     #[default]
     Standard,
@@ -865,20 +863,6 @@ impl AbstractionMode {
     #[must_use]
     pub const fn has_daily_action_limit(&self) -> bool {
         !matches!(self, Self::Standard)
-    }
-}
-
-impl fmt::Display for AbstractionMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::Standard => "Standard",
-                Self::UnifiedAccount => "UnifiedAccount",
-                Self::PortfolioMargin => "PortfolioMargin",
-            }
-        )
     }
 }
 
