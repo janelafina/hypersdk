@@ -1,3 +1,8 @@
+//! Send USDC from a multisig account to another address.
+//!
+//! Demonstrates how multiple signers can collectively authorize a USDC transfer
+//! from a multisig wallet using the `multi_sig` API flow and EIP-712 typed data signing.
+
 use std::{
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},

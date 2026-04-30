@@ -1,3 +1,8 @@
+//! Transfer tokens from the EVM back to the exchange spot wallet.
+//!
+//! Looks up a token by name and sends the specified amount from the signer's EVM balance
+//! back to their exchange spot position via an on-chain transaction to the cross-chain bridge address.
+
 use alloy::{network::TransactionBuilder, rpc::types::TransactionRequest};
 use clap::Parser;
 use hypersdk::{

@@ -1,3 +1,8 @@
+//! Approve an agent wallet for a Hyperliquid account.
+//!
+//! This example demonstrates how to approve an external agent address that can act on
+//! behalf of your account, with optional naming constraints (1 unnamed + up to 3 named per account).
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;

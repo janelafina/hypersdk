@@ -1,3 +1,8 @@
+//! Send USDC to another Hyperliquid account.
+//!
+//! Demonstrates how to transfer USD (USDC) from your exchange balance to a specified
+//! destination address using `send_usdc` with a timestamp-based nonce.
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;

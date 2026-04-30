@@ -1,3 +1,8 @@
+//! Send a spot asset from a multisig account to another address.
+//!
+//! Demonstrates how multiple signers can collectively transfer a spot token (e.g., USDC)
+//! between accounts using the `multi_sig` API flow.
+
 use std::{
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},

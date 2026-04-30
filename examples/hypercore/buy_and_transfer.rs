@@ -1,3 +1,8 @@
+//! Buy a spot token and immediately transfer the acquired tokens to the EVM.
+//!
+//! This example places an IOC (Immediate-or-Cancel) buy order against a USDC pair,
+//! then sends the filled amount back to the signer's EVM address via `transfer_to_evm`.
+
 use std::{
     future::poll_fn,
     time::{Duration, SystemTime, UNIX_EPOCH},

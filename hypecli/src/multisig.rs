@@ -1,3 +1,8 @@
+//! Multi-signature transaction commands for hypecli.
+//!
+//! Supports sending assets, USD transfers, and spot transfers through a multisig wallet
+//! using P2P peer coordination via iroh.
+
 use std::{
     io::{Write, stdout},
     time::Duration,

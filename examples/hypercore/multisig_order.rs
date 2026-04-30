@@ -1,3 +1,8 @@
+//! Place a trading order through a multisig account on Hyperliquid.
+//!
+//! Demonstrates how multiple signers can collectively place a limit order on a perpetual
+//! market (e.g., BTC) using the `multi_sig` API flow.
+
 use std::{
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
