@@ -7,11 +7,9 @@
 //!
 //! The connection yields [`Event`] which wraps connection state and data messages:
 //!
-//! - [`Event::Connected`] - Connection established (including after reconnection)
-//! - [`Event::Disconnected`] - Connection lost (will auto-reconnect)
-//! - [`Event::Message`] - Contains an [`Incoming`] data message
-//!
-//! You can also check the current connection status using [`Connection::is_connected()`].
+//! - [`Event::Connected`] — Connection established (including after reconnection)
+//! - [`Event::Disconnected`] — Connection lost (will auto-reconnect)
+//! - [`Event::Message`] — Contains an [`Incoming`] data message
 //!
 //! # Examples
 //!

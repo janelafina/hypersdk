@@ -87,7 +87,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-hypersdk = "0.1"
+hypersdk = "0.2"
 ```
 
 ## Quick Start
@@ -312,13 +312,17 @@ use rust_decimal_macros::dec;
 let client = hypercore::mainnet();
 let signer: PrivateKeySigner = "your_private_key".parse()?;
 
-// Transfer between Core and EVM
-client.transfer_to_evm(&signer, dec!(100.0), "USDC", nonce).await?;
-client.transfer_from_evm(&signer, dec!(100.0), "USDC", nonce).await?;
-
 // Transfer between perps and spot on Core
 client.transfer_to_perps(&signer, dec!(100.0), "USDC", nonce).await?;
 client.transfer_to_spot(&signer, dec!(100.0), "USDC", nonce).await?;
+
+// Send USDC to an external address
+let send = UsdSend {
+    destination: "0x...".parse()?,
+    amount: dec!(100.0),
+    time: nonce,
+};
+client.send_usdc(&signer, send.clone()).await?;
 ```
 
 ### HIP-3: Multi-DEX Support

@@ -4,6 +4,8 @@
 //! used for interacting with the Hyperliquid exchange API. These types handle
 //! signing, serialization, and API communication.
 
+use std::fmt;
+
 use alloy::{
     dyn_abi::TypedData,
     primitives::{Address, B256},
@@ -866,8 +868,8 @@ impl AbstractionMode {
     }
 }
 
-impl std::fmt::Display for AbstractionMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for AbstractionMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{}",

@@ -68,8 +68,7 @@ use crate::hypercore::{
         AbstractionMode, AgentSendAsset, BasicOrder, BatchCancel, BatchCancelCloid, BatchModify,
         BatchOrder, ClearinghouseState, Fill, FundingRate, InfoRequest, OrderResponseStatus,
         OrderUpdate, ScheduleCancel, SendAsset, SendToken, SpotSend, SubAccount, UsdSend,
-        UserBalance, UserFees, UserRole, UserSetAbstractionAction,
-        UserVaultEquity, VaultDetails,
+        UserBalance, UserFees, UserRole, UserSetAbstractionAction, UserVaultEquity, VaultDetails,
     },
 };
 
@@ -153,6 +152,10 @@ impl Client {
         Self { base_url, ..self }
     }
 
+    /// Sets a custom [`reqwest::Client`] for HTTP requests.
+    ///
+    /// Use this when you need custom configuration such as proxies, custom TLS settings,
+    /// connection pooling, or timeout policies.
     #[must_use]
     pub fn with_http_client(self, http_client: reqwest::Client) -> Self {
         Self {
@@ -448,7 +451,9 @@ impl Client {
         Ok(data)
     }
 
-    /// Returns the user's historical orders.
+    /// Retrieves historical orders for a user.
+    ///
+    /// Returns all past (non-open) orders, including filled, canceled, and expired orders.
     pub async fn historical_orders(&self, user: Address) -> Result<Vec<BasicOrder>> {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
@@ -469,6 +474,9 @@ impl Client {
     }
 
     /// Returns the user's fills.
+    ///
+    /// Retrieves all trade fills (executed orders) for a user, including the fill price, size,
+    /// side, and associated order ID.
     pub async fn user_fills(&self, user: Address) -> Result<Vec<Fill>> {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
@@ -488,7 +496,16 @@ impl Client {
         Ok(data)
     }
 
-    /// Returns the user's fills by time.
+    /// Returns the user's fills filtered by time range.
+    ///
+    /// Retrieves all trade fills for a user within the specified time window.
+    /// This is useful for P&L calculation and trade history analysis.
+    ///
+    /// # Parameters
+    ///
+    /// - `user`: The address to query fills for
+    /// - `start_time`: Start timestamp in milliseconds (inclusive)
+    /// - `end_time`: Optional end timestamp in milliseconds (inclusive). Defaults to now if `None`.
     pub async fn user_fills_by_time(
         &self,
         user: Address,
@@ -518,6 +535,14 @@ impl Client {
     }
 
     /// Returns the status of an order.
+    ///
+    /// Checks whether an order is still open, filled, canceled, or unknown.
+    /// Returns `None` if the order ID is not found.
+    ///
+    /// # Parameters
+    ///
+    /// - `user`: The address that placed the order
+    /// - `oid`: Either an exchange-assigned order ID (OID) or a client-assigned order ID (CLOID)
     pub async fn order_status(
         &self,
         user: Address,
@@ -1206,7 +1231,19 @@ impl Client {
         Ok(data)
     }
 
-    /// Schedule cancellation.
+    /// Schedules a cancellation of all open orders at a specified time.
+    ///
+    /// This is a signed action that tells the exchange to cancel all of the user's
+    /// open orders at the given timestamp. Useful for risk management — for example,
+    /// scheduling an end-of-day order sweep.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the schedule action
+    /// - `nonce`: Unique nonce for this request
+    /// - `when`: The UTC time at which all open orders should be canceled
+    /// - `vault_address`: Optional vault/subaccount address
+    /// - `expires_after`: Optional expiration time for the request itself
     pub async fn schedule_cancel<S: SignerSync>(
         &self,
         signer: &S,
@@ -1293,7 +1330,11 @@ impl Client {
         }
     }
 
-    /// Cancel a batch of orders.
+    /// Cancel a batch of orders by exchange-assigned order ID (OID).
+    ///
+    /// Each cancel request specifies an asset and an order ID. Returns the status
+    /// for each cancellation attempt. Errors are wrapped in [`ActionError`] with the
+    /// failed OIDs accessible via `.ids()`.
     pub fn cancel<S: SignerSync>(
         &self,
         signer: &S,
@@ -1324,7 +1365,11 @@ impl Client {
         }
     }
 
-    /// Cancel a batch of orders by cloid.
+    /// Cancel a batch of orders by client-assigned order ID (CLOID).
+    ///
+    /// Each cancel request specifies an asset and a client order ID. Returns the status
+    /// for each cancellation attempt. Errors are wrapped in [`ActionError`] with the
+    /// failed CLOIDs accessible via `.ids()`.
     pub fn cancel_by_cloid<S: SignerSync>(
         &self,
         signer: &S,
@@ -1355,7 +1400,12 @@ impl Client {
         }
     }
 
-    /// Modify a batch of orders.
+    /// Modify a batch of existing orders (change price, size, or both).
+    ///
+    /// Each modify request references an order by OID or CLOID and specifies the
+    /// new price (`limit_px`) and/or size (`sz`). If only one field is changed, set
+    /// the other to its current value. Returns the status for each modification attempt.
+    /// Errors are wrapped in [`ActionError`] with the failed order IDs accessible via `.ids()`.
     pub fn modify<S: SignerSync>(
         &self,
         signer: &S,
@@ -1515,7 +1565,17 @@ impl Client {
         }
     }
 
-    /// Helper function to transfer from spot core to EVM.
+    /// Helper function to transfer from spot Core balance to HyperEVM.
+    ///
+    /// Sends the specified token from the signer's spot balance on HyperCore to their
+    /// corresponding address on HyperEVM. The token must have a cross-chain address configured.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the transfer
+    /// - `token`: The [`SpotToken`] to transfer (must have a cross-chain address)
+    /// - `amount`: Amount to transfer
+    /// - `nonce`: Unique nonce for this request
     pub async fn transfer_to_evm<S: Send + SignerSync>(
         &self,
         signer: &S,
@@ -1540,9 +1600,17 @@ impl Client {
         .await
     }
 
-    /// Helper function to transfer from perps to spot.
+    /// Helper function to transfer from perpetual balance to spot.
     ///
+    /// Moves USDC from the signer's perpetual (perps) balance to their spot balance.
     /// Only USDC is accepted as `token`.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the transfer
+    /// - `token`: Must be USDC — other tokens return an error
+    /// - `amount`: Amount to transfer
+    /// - `nonce`: Unique nonce for this request
     pub async fn transfer_to_spot<S: Signer + SignerSync>(
         &self,
         signer: &S,
@@ -1573,9 +1641,17 @@ impl Client {
         .await
     }
 
-    /// Helper function to transfer from spot to perps.
+    /// Helper function to transfer from spot to perpetual balance.
     ///
+    /// Moves USDC from the signer's spot balance to their perpetual (perps) balance.
     /// Only USDC is accepted as `token`.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the transfer
+    /// - `token`: Must be USDC — other tokens return an error
+    /// - `amount`: Amount to transfer
+    /// - `nonce`: Unique nonce for this request
     pub async fn transfer_to_perps<S: Signer + SignerSync>(
         &self,
         signer: &S,
@@ -1606,9 +1682,17 @@ impl Client {
         .await
     }
 
-    /// Send USDC to another address.
+    /// Send USDC from perpetual balance to another address (perp-to-perp transfer).
     ///
-    /// Perp <> Perp transfers.
+    /// This performs a core USDC transfer between perpetual balances. The amount is
+    /// deducted from the signer's perps balance and credited to the destination's
+    /// perps balance.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the transfer
+    /// - `send`: A [`UsdSend`] specifying destination, amount, and timestamp
+    /// - `nonce`: Unique nonce for this request
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#core-usdc-transfer>
     pub async fn send_usdc<S: SignerSync>(
@@ -1666,9 +1750,16 @@ impl Client {
         }
     }
 
-    /// Send USDC to another address.
+    /// Send USDC between spot and DEX/subaccount balances.
     ///
-    /// Spot <> DEX or Subaccount.
+    /// This performs a `SendAsset` action for spot-to-DEX, DEX-to-spot, or subaccount transfers.
+    /// The source and destination are determined by the [`SendAsset`] fields.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the transfer
+    /// - `send`: A [`SendAsset`] specifying source/destination DEX, token, amount, etc.
+    /// - `nonce`: Unique nonce for this request
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#send-asset>
     pub fn send_asset<S: SignerSync>(
@@ -1720,9 +1811,16 @@ impl Client {
         }
     }
 
-    /// Spot transfer.
+    /// Send a spot token to another address (spot-to-spot transfer).
     ///
-    /// Spot <> Spot.
+    /// Transfers any spot token between accounts. Unlike [`send_usdc`](Self::send_usdc)
+    /// which only handles USDC on perpetual balances, this works with any spot token.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the transfer
+    /// - `send`: A [`SpotSend`] specifying destination, token, and amount
+    /// - `nonce`: Unique nonce for this request
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#core-spot-transfer>
     pub fn spot_send<S: SignerSync>(
@@ -1807,7 +1905,17 @@ impl Client {
         }
     }
 
-    /// Toggle big blocks or not idk.
+    /// Toggle the EVM user "big blocks" setting via signed action.
+    ///
+    /// Enables or disables big block processing for the user's HyperEVM account.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the action
+    /// - `toggle`: `true` to enable big blocks, `false` to disable
+    /// - `nonce`: Unique nonce for this request
+    /// - `vault_address`: Optional vault/subaccount address
+    /// - `expires_after`: Optional expiration time for the request
     pub async fn evm_user_modify<S: SignerSync>(
         &self,
         signer: &S,
@@ -1837,7 +1945,18 @@ impl Client {
         }
     }
 
-    /// Invalidate a nonce.
+    /// Invalidate a nonce by sending a no-op action.
+    ///
+    /// This burns a nonce without performing any state change. Useful for ensuring
+    /// monotonically increasing nonces stay in sync when some transactions are skipped
+    /// or when you need to advance the nonce past a specific value.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the noop
+    /// - `nonce`: The nonce to invalidate
+    /// - `vault_address`: Optional vault/subaccount address
+    /// - `expires_after`: Optional expiration time for the request
     pub async fn noop<S: SignerSync>(
         &self,
         signer: &S,
