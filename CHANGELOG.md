@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [v0.2.10] - 2026-01-XX
+## [v0.2.10]
 
 ### Added
 
@@ -29,7 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v0.2.9] - 2026-01-XX
+## [v0.2.9]
 
 ### Added
 
@@ -43,7 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v0.2.8] - 2026-01-XX
+## [v0.2.8]
 
 ### Added
 
@@ -62,7 +62,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v0.2.7] - 2026-01-XX
+## [v0.2.7]
 
 ### Added
 
@@ -79,7 +79,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v0.2.6] - 2026-01-XX
+## [v0.2.6]
 
 ### Added
 
@@ -100,7 +100,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v0.2.5] - 2026-01-XX
+## [v0.2.5]
 
 ### Added
 
@@ -115,7 +115,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v0.2.4] - 2026-01-XX
+## [v0.2.4]
 
 ### Added
 
@@ -127,7 +127,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v0.2.3] - 2026-01-XX
+## [v0.2.3]
 
 ### Added
 
@@ -136,7 +136,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v0.2.2] - 2026-01-XX
+## [v0.2.2]
 
 ### Added
 
@@ -174,7 +174,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v0.2.1] - 2026-01-XX
+## [v0.2.1]
 
 ### Added
 
@@ -191,7 +191,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v0.2.0] - 2026-01-XX
+## [v0.2.0]
 
 ### Changed
 
