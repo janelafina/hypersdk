@@ -2772,15 +2772,9 @@ impl UserBalance {
 /// Abstraction over a token to be sent out.
 ///
 /// This is to prevent users from f*cking it up.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::Display)]
+#[display("{}", _0.name)]
 pub struct SendToken(pub SpotToken);
-
-impl fmt::Display for SendToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // write!(f, "{}:{:x}", self.0.name, self.0.token_id)
-        write!(f, "{}", self.0.name)
-    }
-}
 
 /// Multi-signature wallet configuration.
 ///

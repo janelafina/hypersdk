@@ -93,7 +93,6 @@ mod utils;
 pub mod ws;
 
 use std::{
-    fmt,
     hash::Hash,
     sync::atomic::{self, AtomicU64},
 };
@@ -1167,7 +1166,8 @@ mod tick_tests {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::Display)]
+#[display("{name}")]
 pub struct SpotToken {
     /// Token name (e.g., "USDC", "BTC", "PURR")
     pub name: String,
@@ -1290,12 +1290,6 @@ impl PartialEq for SpotToken {
 }
 
 impl Eq for SpotToken {}
-
-impl fmt::Display for SpotToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
 
 /// One side of an outcome market.
 #[derive(Debug, Clone)]
