@@ -181,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
     bar.finish_and_clear();
 
     let mut markets = market_params.into_iter().zip(markets).collect::<Vec<_>>();
-    markets.sort_by(|(_, a), (_, b)| a.totalBorrowAssets.cmp(&b.totalBorrowAssets));
+    markets.sort_by_key(|(_, a)| a.totalBorrowAssets);
 
     for (params, market) in markets {
         println!("------------");

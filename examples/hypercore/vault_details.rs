@@ -57,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Show top 5 followers by equity
     let mut followers = details.followers.clone();
-    followers.sort_by(|a, b| b.vault_equity.cmp(&a.vault_equity));
+    followers.sort_by_key(|a| std::cmp::Reverse(a.vault_equity));
     for (i, follower) in followers.iter().take(5).enumerate() {
         println!(
             "  {}. {}: ${} (PnL: ${})",

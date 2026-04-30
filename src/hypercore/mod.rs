@@ -224,6 +224,74 @@ impl OutcomeMarket {
     }
 }
 
+/// Trait for any tradeable market on Hyperliquid.
+///
+/// Provides access to the properties needed for order placement:
+/// the asset index and price tick table.
+///
+/// Implemented for [`PerpMarket`], [`SpotMarket`], and [`OutcomeMarket`].
+pub trait Market: private::Sealed {
+    /// Asset index used in API order requests.
+    fn asset_index(&self) -> usize;
+
+    /// Price tick configuration for rounding prices to valid ticks.
+    fn tick_table(&self) -> PriceTick;
+}
+
+mod private {
+    /// Seals [`super::Market`] so only this crate can implement it.
+    pub trait Sealed {}
+
+    impl Sealed for super::PerpMarket {}
+    impl Sealed for super::SpotMarket {}
+    impl Sealed for super::OutcomeMarket {}
+
+    // Also seal references so `&PerpMarket`, `&SpotMarket`, etc. work with `impl Market`.
+    impl<T: Sealed> Sealed for &T {}
+}
+
+impl Market for PerpMarket {
+    fn asset_index(&self) -> usize {
+        self.index
+    }
+
+    fn tick_table(&self) -> PriceTick {
+        self.table
+    }
+}
+
+impl Market for SpotMarket {
+    fn asset_index(&self) -> usize {
+        self.index
+    }
+
+    fn tick_table(&self) -> PriceTick {
+        self.table
+    }
+}
+
+impl Market for OutcomeMarket {
+    fn asset_index(&self) -> usize {
+        self.market
+    }
+
+    fn tick_table(&self) -> PriceTick {
+        // Outcomes trade between 0 and 1; use a perp-style tick with no sz_decimals limit.
+        PriceTick::for_perp(0)
+    }
+}
+
+// Blanket impl so `&PerpMarket`, `&SpotMarket`, `&OutcomeMarket` also satisfy `impl Market`.
+impl<T: Market> Market for &T {
+    fn asset_index(&self) -> usize {
+        (*self).asset_index()
+    }
+
+    fn tick_table(&self) -> PriceTick {
+        (*self).tick_table()
+    }
+}
+
 impl Default for NonceHandler {
     fn default() -> Self {
         let now = Utc::now().timestamp_millis() as u64;

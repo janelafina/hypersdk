@@ -84,6 +84,10 @@ name = "transfer_to_evm"
 path = "examples/hypercore/transfer_to_evm.rs"
 
 [[example]]
+name = "market_order"
+path = "examples/hypercore/market_order.rs"
+
+[[example]]
 name = "transfer_to_perps"
 path = "examples/hypercore/transfer_to_perps.rs"
 

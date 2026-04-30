@@ -57,7 +57,7 @@ use url::Url;
 
 use super::{AssetTarget, signing::*};
 use crate::hypercore::{
-    ActionError, ApiAgent, CandleInterval, Chain, Cloid, Dex, GossipPriorityAuctionStatus,
+    ActionError, ApiAgent, CandleInterval, Chain, Cloid, Dex, GossipPriorityAuctionStatus, Market,
     MultiSigConfig, OidOrCloid, OutcomeMeta, PerpMarket, Signature, SpotMarket, SpotToken,
     api::{
         Action, ActionRequest, ApproveAgent, ConvertToMultiSigUser, GossipPriorityBid, OkResponse,
@@ -66,9 +66,10 @@ use crate::hypercore::{
     mainnet_url, testnet_url,
     types::{
         AbstractionMode, AgentSendAsset, BasicOrder, BatchCancel, BatchCancelCloid, BatchModify,
-        BatchOrder, ClearinghouseState, Fill, FundingRate, InfoRequest, OrderResponseStatus,
-        OrderUpdate, ScheduleCancel, SendAsset, SendToken, SpotSend, SubAccount, UsdSend,
-        UserBalance, UserFees, UserRole, UserSetAbstractionAction, UserVaultEquity, VaultDetails,
+        BatchOrder, ClearinghouseState, Fill, FundingRate, InfoRequest, OrderGrouping,
+        OrderRequest, OrderResponseStatus, OrderTypePlacement, OrderUpdate, ScheduleCancel,
+        SendAsset, SendToken, SpotSend, SubAccount, TimeInForce, UsdSend, UserBalance, UserFees,
+        UserRole, UserSetAbstractionAction, UserVaultEquity, VaultDetails,
     },
 };
 
@@ -1186,6 +1187,7 @@ impl Client {
     /// = `U256::from(50u128) * U256::from(1e18)`.
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>
+    #[allow(clippy::too_many_arguments)]
     pub async fn gossip_priority_bid<S: SignerSync>(
         &self,
         signer: &S,
@@ -1328,6 +1330,77 @@ impl Client {
                 }),
             }
         }
+    }
+
+    /// Place a market buy or sell order for any tradeable market.
+    ///
+    /// Uses Hyperliquid's native [`TimeInForce::FrontendMarket`] order type, which
+    /// fills immediately at the best available price without requiring a limit price.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: Private key signer for EIP-712 signatures
+    /// - `market`: Market to trade on — pass a [`PerpMarket`], [`SpotMarket`], or [`OutcomeMarket`]
+    /// - `is_buy`: `true` for buy, `false` for sell
+    /// - `size`: Position size in base asset units
+    /// - `nonce`: Unique nonce (typically current timestamp in milliseconds)
+    /// - `vault_address`: Optional vault address if trading on behalf of a vault
+    /// - `expires_after`: Optional expiration timestamp for the request
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hypersdk::hypercore::{self, NonceHandler};
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let client = hypercore::testnet();
+    /// let signer: hypercore::PrivateKeySigner = "your_key".parse()?;
+    /// let nonce_handler = NonceHandler::default();
+    ///
+    /// // Find ETH perpetual market
+    /// let perps = client.perps().await?;
+    /// let eth = perps.iter().find(|m| m.name == "ETH").expect("ETH");
+    ///
+    /// // Market buy 0.01 ETH
+    /// let statuses = client
+    ///     .market_open(&signer, eth, true, rust_decimal::dec!(0.01), nonce_handler.next(), None, None)
+    ///     .await?;
+    ///
+    /// for status in &statuses {
+    ///     println!("Order result: {:?}", status);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[allow(clippy::too_many_arguments)]
+    pub async fn market_open<S: SignerSync>(
+        &self,
+        signer: &S,
+        market: impl Market,
+        is_buy: bool,
+        size: Decimal,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> Result<Vec<OrderResponseStatus>> {
+        let batch = BatchOrder {
+            orders: vec![OrderRequest {
+                asset: market.asset_index(),
+                is_buy,
+                limit_px: Decimal::ZERO,
+                sz: size,
+                reduce_only: false,
+                order_type: OrderTypePlacement::Limit {
+                    tif: TimeInForce::FrontendMarket,
+                },
+                cloid: Default::default(),
+            }],
+            grouping: OrderGrouping::Na,
+        };
+
+        self.place(signer, batch, nonce, vault_address, expires_after)
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))
     }
 
     /// Cancel a batch of orders by exchange-assigned order ID (OID).
@@ -1872,6 +1945,7 @@ impl Client {
     /// // Set BTC (asset 0) to 10x cross margin
     /// client.update_leverage(&signer, 0, true, 10, nonce_handler.next(), None, None).await?;
     /// ```
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_leverage<S: SignerSync>(
         &self,
         signer: &S,
