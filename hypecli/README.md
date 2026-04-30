@@ -72,6 +72,14 @@ hypecli perps
 hypecli perps --dex xyz
 ```
 
+### List Spot Markets
+
+List all spot trading pairs.
+
+```bash
+hypecli spot
+```
+
 ### Query Balances
 
 Query all balances (spot, perp, and DEX) for a user address.
@@ -91,6 +99,107 @@ hypecli balance 0x1234... --skip-hip3
 ```
 
 Shows spot balances, perp account details (account value, margin used, withdrawable, positions), and all HIP-3 DEX balances. Use `--skip-hip3` to skip DEX queries.
+
+### Placing Orders
+
+Place limit or market orders on perpetual markets.
+
+```bash
+# Place a limit buy order for 0.1 BTC at $50,000
+hypecli order limit \
+  --keystore my-wallet \
+  --asset BTC \
+  --side buy \
+  --price 50000 \
+  --size 0.1
+
+# Place a market sell order with slippage protection
+hypecli order market \
+  --keystore my-wallet \
+  --asset ETH \
+  --side sell \
+  --size 1 \
+  --slippage-price 3400
+
+# Cancel an order by OID
+hypecli order cancel \
+  --keystore my-wallet \
+  --asset BTC \
+  --oid 123456789
+```
+
+Time-in-force options: `gtc` (default), `alo` (add liquidity only), `ioc` (immediate or cancel).
+
+### Query Positions
+
+View open perpetual positions for a user address.
+
+```bash
+hypecli positions 0x1234567890abcdef1234567890abcdef12345678
+```
+
+### Query Orders and Fills
+
+List historical orders or trade fills.
+
+```bash
+# List open orders
+hypecli orders list 0x1234567890abcdef1234567890abcdef12345678
+
+# List fills
+hypecli orders fills 0x1234567890abcdef1234567890abcdef12345678
+```
+
+### Sending Assets
+
+Send tokens between accounts, DEXes, or subaccounts.
+
+```bash
+# Send USDC to another address
+hypecli send \
+  --keystore my-wallet \
+  --token USDC \
+  --amount 100 \
+  --destination 0xRecipientAddress...
+
+# Transfer from spot to perp balance
+hypecli send \
+  --keystore my-wallet \
+  --token USDC \
+  --amount 100 \
+  --from spot \
+  --to perp
+```
+
+### Vault Deposits and Withdrawals
+
+Deposit into or withdraw from yield vaults.
+
+```bash
+# Deposit 100 USDC into a vault
+hypecli vault deposit \
+  --keystore my-wallet \
+  --vault 0xVaultAddress... \
+  --amount 100
+
+# Withdraw 50 USDC from a vault
+hypecli vault withdraw \
+  --keystore my-wallet \
+  --vault 0xVaultAddress... \
+  --amount 50
+```
+
+### Subscribe to WebSocket Feeds
+
+Subscribe to real-time WebSocket data feeds.
+
+```bash
+# Subscribe to trades
+hypecli subscribe trades BTC
+
+# Subscribe to order book
+hypecli subscribe book ETH
+```
 
 ### Gossip Priority (Dutch Auction)
 
@@ -259,10 +368,10 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 Ideas for contributions:
 
-- New commands for trading operations
-- JSON output format support
-- Configuration file support
-- Interactive mode
+- Morpho supply/borrow operations (deposit, withdraw, borrow, repay)
+- Uniswap V3 swap and liquidity operations
+- Configuration file support (for default keystore, chain, etc.)
+- Interactive/repl mode
 - Performance optimizations
 
 ## License
