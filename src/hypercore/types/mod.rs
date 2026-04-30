@@ -774,7 +774,7 @@ impl CandleInterval {
     /// - For `OneMonth`, this method assumes **30 days** by default.
     ///
     /// If you need a calendar-aware duration (e.g. 28/29/30/31 days),
-    /// use [`to_duration_with_month_days`] instead.
+    /// use [`Self::to_duration_with_month_days`] instead.
     pub fn to_duration(&self) -> Duration {
         self.to_duration_with_month_days(30)
     }
@@ -1331,16 +1331,27 @@ pub struct UserTwapHistory {
 #[serde_as]
 #[serde(rename_all = "camelCase")]
 pub struct BasicOrder {
+    /// Unix timestamp (ms) when the order was placed.
     pub timestamp: u64,
+    /// Coin/market symbol (e.g., "BTC").
     pub coin: String,
+    /// Buy or sell side.
     pub side: Side,
+    /// Limit price.
     pub limit_px: Decimal,
+    /// Remaining size to fill.
     pub sz: Decimal,
+    /// Exchange-assigned order ID.
     pub oid: u64,
+    /// Original size at placement.
     pub orig_sz: Decimal,
+    /// Client-assigned order ID (if set).
     pub cloid: Option<B128>,
+    /// Order type (limit, market, etc.).
     pub order_type: OrderType,
+    /// Time-in-force (GTC, IOC, ALO).
     pub tif: Option<TimeInForce>,
+    /// Whether this order should only reduce an existing position.
     pub reduce_only: bool,
 }
 
@@ -1354,13 +1365,21 @@ pub struct BasicOrder {
 #[serde_as]
 #[serde(rename_all = "camelCase")]
 pub struct WsBasicOrder {
+    /// Unix timestamp (ms) when the order was placed.
     pub timestamp: u64,
+    /// Coin/market symbol (e.g., "BTC").
     pub coin: String,
+    /// Buy or sell side.
     pub side: Side,
+    /// Limit price.
     pub limit_px: Decimal,
+    /// Remaining size to fill.
     pub sz: Decimal,
+    /// Exchange-assigned order ID.
     pub oid: u64,
+    /// Original size at placement.
     pub orig_sz: Decimal,
+    /// Client-assigned order ID (if set).
     pub cloid: Option<B128>,
 }
 
@@ -1674,8 +1693,11 @@ impl OrderStatus {
 /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#core-usdc-transfer>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsdSend {
+    /// Destination address.
     pub destination: Address,
+    /// Amount of USDC to send.
     pub amount: Decimal,
+    /// Unix timestamp (ms); doubles as the action nonce.
     pub time: u64,
 }
 
@@ -1761,6 +1783,10 @@ impl SpotSend {
     }
 }
 
+/// Asset target for transfers.
+///
+/// Specifies whether a transfer destination is a perpetual (perp) balance,
+/// a spot balance, or a HIP-3 DEX identified by name.
 #[derive(Debug, Clone, derive_more::Display)]
 pub enum AssetTarget {
     #[display("")]
@@ -1795,13 +1821,13 @@ impl std::str::FromStr for AssetTarget {
 pub struct SendAsset {
     /// The destination address.
     pub destination: Address,
-    /// Source DEX, for
+    /// Source DEX or balance context (e.g., [`AssetTarget::Perp`], [`AssetTarget::Spot`]).
     #[serde_as(as = "DisplayFromStr")]
     pub source_dex: AssetTarget,
-    /// Destiation DEX, can be empty
+    /// Destination DEX or balance context (e.g., [`AssetTarget::Perp`], [`AssetTarget::Spot`]).
     #[serde_as(as = "DisplayFromStr")]
     pub destination_dex: AssetTarget,
-    /// Token
+    /// Token to send.
     pub token: SendToken,
     /// The amount.
     pub amount: Decimal,

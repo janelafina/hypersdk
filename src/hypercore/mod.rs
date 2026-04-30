@@ -1080,7 +1080,7 @@ mod tick_tests {
 ///
 /// Tokens with `evm_contract` set can be transferred between HyperCore and HyperEVM:
 /// - Use `cross_chain_address` as the destination when transferring to EVM
-/// - Use the HTTP client's `transfer_to_evm` and `transfer_from_evm` methods
+/// - Use the HTTP client's [`HttpClient::transfer_to_evm`] method
 ///
 /// # Example
 ///
@@ -1280,7 +1280,7 @@ pub struct OutcomeMeta {
 /// class:priceBinary|underlying:BTC|expiry:20260428-0300|targetPrice:79133|period:1d
 /// ```
 ///
-/// Use [`RecurringEvent::from_str`] to parse an [`OutcomeInfo::description`].
+/// Use [`std::str::FromStr::from_str`] to parse an [`OutcomeInfo::description`].
 /// Non-recurring outcomes (free-text descriptions) will return `None`.
 #[derive(Debug, Clone)]
 pub struct RecurringEvent {
@@ -1692,10 +1692,15 @@ where
     }
 }
 
+/// Margin mode for a perpetual market.
+///
+/// Determines how margin is managed across positions.
 #[derive(Debug, Copy, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MarginMode {
+    /// Strict isolated margin — position can only use its allocated margin.
     StrictIsolated,
+    /// No cross-margin — position uses isolated margin but with different risk parameters.
     NoCross,
 }
 
