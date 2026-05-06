@@ -1,8 +1,10 @@
-//! Dwellir streaming integration for Hyperliquid.
+//! Dwellir integrations for Hyperliquid.
 //!
-//! Dwellir exposes two streams that go beyond the native Hyperliquid
-//! WebSocket API:
+//! Dwellir exposes an authenticated HTTP Info Endpoint plus two streams that
+//! go beyond the native Hyperliquid WebSocket API:
 //!
+//! - **Info Endpoint** — authenticated HTTP JSON queries for user open orders
+//!   and positions. See [`InfoClient`].
 //! - **L4 order book** — per-order book data (individual orders, wallet
 //!   addresses, order IDs). Delivered over WebSocket. See [`L4Connection`].
 //! - **Fills** — real-time fills across the whole chain, delivered as a gRPC
@@ -23,11 +25,13 @@
 //! |------------------------|---------------------------------------------------------------|
 //! | `DWELLIR_WS_ENDPOINT`  | L4 WebSocket URL (often already contains an auth token).      |
 //! | `DWELLIR_GRPC_ENDPOINT`| Fills gRPC endpoint, e.g. `https://hyperliquid.dwellir.com:443`. |
-//! | `DWELLIR_API_KEY`      | Optional `x-api-key` metadata value for the gRPC stream.      |
+//! | `DWELLIR_API_KEY`      | API key for HTTP URL path and optional `x-api-key` gRPC metadata. |
 //!
-//! See [`l4_from_env`] and [`fills_from_env`] for the convenience wrappers.
+//! See [`info_from_env`], [`l4_from_env`], and [`fills_from_env`] for the
+//! convenience wrappers.
 
 pub mod grpc;
+pub mod http;
 pub mod types;
 pub mod ws;
 
@@ -38,6 +42,10 @@ use url::Url;
 
 pub use grpc::{
     Event as FillsEvent, FillsConnection, FillsConnectionStream, StartPosition as FillsStartPosition,
+};
+pub use http::{
+    Client as InfoClient, DwellirInfoRequest, DwellirOpenOrder, DwellirPosition,
+    DwellirPositionData, INFO_BASE_URL,
 };
 pub use types::*;
 pub use ws::{
@@ -67,6 +75,16 @@ pub fn grpc_endpoint_from_env() -> Result<String> {
 /// Reads [`API_KEY_ENV`] if set.
 pub fn api_key_from_env() -> Option<String> {
     env::var(API_KEY_ENV).ok()
+}
+
+/// Reads [`API_KEY_ENV`], returning an error if it is missing.
+pub fn required_api_key_from_env() -> Result<String> {
+    env::var(API_KEY_ENV).with_context(|| format!("missing env var {API_KEY_ENV}"))
+}
+
+/// Builds a Dwellir HTTP info client using [`API_KEY_ENV`].
+pub fn info_from_env() -> Result<InfoClient> {
+    Ok(InfoClient::new(required_api_key_from_env()?))
 }
 
 /// Builds an L4 WebSocket connection using [`WS_ENDPOINT_ENV`].
