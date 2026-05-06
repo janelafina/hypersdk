@@ -89,11 +89,11 @@ pub mod api;
 pub(super) mod solidity;
 
 // Re-export important raw types for convenience
-pub use api::{
-    Action, ActionRequest, GossipPriorityBid, MultiSigAction, MultiSigPayload, OkResponse, Response,
-    UserDexAbstractionAction, UserSetAbstractionAction,
-};
 pub use api::AbstractionMode;
+pub use api::{
+    Action, ActionRequest, GossipPriorityBid, MultiSigAction, MultiSigPayload, OkResponse,
+    Response, UserDexAbstractionAction, UserSetAbstractionAction,
+};
 // Import from raw module (which is now a submodule)
 use api::{AgentSendAssetAction, SendAssetAction, SpotSendAction, UsdSendAction};
 
@@ -2704,8 +2704,9 @@ pub struct SpotAssetContext {
 pub struct UserBalance {
     /// Token symbol
     pub coin: String,
-    /// Token index
-    pub token: usize,
+    /// Token index (absent for outcome market balances)
+    #[serde(default)]
+    pub token: Option<usize>,
     /// Amount held (locked)
     pub hold: Decimal,
     /// Total balance
