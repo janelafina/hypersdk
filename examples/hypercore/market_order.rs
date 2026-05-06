@@ -1,10 +1,11 @@
 //! Places a market buy or sell order.
 //!
 //! Demonstrates `market_open()` which uses Hyperliquid's native `FrontendMarket`
-//! order type to fill immediately at the best available price.
+//! order type to fill immediately up to the provided worst acceptable price.
 
 use clap::Parser;
 use hypersdk::hypercore::{self as hypercore, NonceHandler};
+use rust_decimal::Decimal;
 
 use crate::credentials::Credentials;
 
@@ -27,6 +28,10 @@ struct Cli {
     /// Size in base asset units
     #[arg(long, default_value_t = 0.01_f64)]
     size: f64,
+
+    /// Worst acceptable execution price
+    #[arg(long)]
+    price: Decimal,
 }
 
 #[tokio::main]
@@ -47,13 +52,14 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("market '{}' not found", args.coin))?;
 
     let side = if args.buy { "buy" } else { "sell" };
-    println!("Market {side} {} {}", args.coin, args.size);
+    println!("Market {side} {} {} @ {}", args.coin, args.size, args.price);
 
     let statuses = client
         .market_open(
             &signer,
             market,
             args.buy,
+            args.price,
             rust_decimal::Decimal::try_from(args.size).unwrap(),
             nonce_handler.next(),
             None,

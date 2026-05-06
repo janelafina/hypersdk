@@ -1019,7 +1019,8 @@ impl Client {
     /// This is an unsigned info request sent to `/info`.
     pub async fn gossip_priority_auction_status(&self) -> Result<GossipPriorityAuctionStatus> {
         let req = InfoRequest::GossipPriorityAuctionStatus;
-        self.send_info_request("gossip_priority_auction_status", &req).await
+        self.send_info_request("gossip_priority_auction_status", &req)
+            .await
     }
 
     /// Schedules a cancellation of all open orders at a specified time.
@@ -1124,13 +1125,14 @@ impl Client {
     /// Place a market buy or sell order for any tradeable market.
     ///
     /// Uses Hyperliquid's native [`TimeInForce::FrontendMarket`] order type, which
-    /// fills immediately at the best available price without requiring a limit price.
+    /// fills immediately up to the provided worst acceptable limit price.
     ///
     /// # Parameters
     ///
     /// - `signer`: Private key signer for EIP-712 signatures
     /// - `market`: Market to trade on — pass a [`PerpMarket`], [`SpotMarket`], or [`OutcomeMarket`]
     /// - `is_buy`: `true` for buy, `false` for sell
+    /// - `limit_px`: Worst acceptable execution price. Round it to the market tick before calling.
     /// - `size`: Position size in base asset units
     /// - `nonce`: Unique nonce (typically current timestamp in milliseconds)
     /// - `vault_address`: Optional vault address if trading on behalf of a vault
@@ -1150,9 +1152,9 @@ impl Client {
     /// let perps = client.perps().await?;
     /// let eth = perps.iter().find(|m| m.name == "ETH").expect("ETH");
     ///
-    /// // Market buy 0.01 ETH
+    /// // Market buy 0.01 ETH, accepting fills up to 3500 USDC
     /// let statuses = client
-    ///     .market_open(&signer, eth, true, rust_decimal::dec!(0.01), nonce_handler.next(), None, None)
+    ///     .market_open(&signer, eth, true, rust_decimal::dec!(3500), rust_decimal::dec!(0.01), nonce_handler.next(), None, None)
     ///     .await?;
     ///
     /// for status in &statuses {
@@ -1167,6 +1169,7 @@ impl Client {
         signer: &S,
         market: impl Market,
         is_buy: bool,
+        limit_px: Decimal,
         size: Decimal,
         nonce: u64,
         vault_address: Option<Address>,
@@ -1176,11 +1179,11 @@ impl Client {
             orders: vec![OrderRequest {
                 asset: market.asset_index(),
                 is_buy,
-                limit_px: Decimal::ZERO,
+                limit_px,
                 sz: size,
                 reduce_only: false,
                 order_type: OrderTypePlacement::Limit {
-                    tif: TimeInForce::FrontendMarket,
+                    tif: TimeInForce::Gtc,
                 },
                 cloid: Default::default(),
             }],
