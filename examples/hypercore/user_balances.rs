@@ -31,7 +31,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     println!("Spot balances for {:?}:", args.user);
-    println!("{:<12} {:>12} {:>12} {:>12}", "Coin", "Total", "Hold", "Available");
+    println!(
+        "{:<12} {:>12} {:>12} {:>12}",
+        "Coin", "Total", "Hold", "Available"
+    );
     println!("{:-<48}", "");
 
     for balance in &balances {

@@ -223,6 +223,14 @@ impl OutcomeMarket {
     }
 }
 
+impl PartialEq for OutcomeMarket {
+    fn eq(&self, other: &Self) -> bool {
+        self.market == other.market
+    }
+}
+
+impl Eq for OutcomeMarket {}
+
 /// Trait for any tradeable market on Hyperliquid.
 ///
 /// Provides access to the properties needed for order placement:
@@ -651,7 +659,7 @@ pub fn testnet_ws() -> WebSocket {
 /// ```
 ///
 /// See: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size>
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PriceTick {
     /// Maximum decimal places allowed for this market.
     /// - Spot: max_decimals = 8 - sz_decimals
@@ -840,6 +848,14 @@ pub struct PerpMarket {
     /// Price tick configuration for valid price increments
     pub table: PriceTick,
 }
+
+impl PartialEq for PerpMarket {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for PerpMarket {}
 
 impl PerpMarket {
     /// Returns the market symbol (same as name for perps).
@@ -1058,7 +1074,7 @@ impl SpotMarket {
 
 impl PartialEq for SpotMarket {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
+        self.index == other.index
     }
 }
 
@@ -1292,7 +1308,7 @@ impl PartialEq for SpotToken {
 impl Eq for SpotToken {}
 
 /// One side of an outcome market.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OutcomeSideSpec {
     /// Side name (e.g., "Yes", "No")
     pub name: String,
@@ -1335,6 +1351,34 @@ pub struct OutcomeMeta {
     pub questions: Vec<OutcomeQuestion>,
 }
 
+impl PartialEq for OutcomeInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.outcome == other.outcome
+    }
+}
+
+impl Eq for OutcomeInfo {}
+
+impl Hash for OutcomeInfo {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.outcome.hash(state);
+    }
+}
+
+impl PartialEq for OutcomeQuestion {
+    fn eq(&self, other: &Self) -> bool {
+        self.question == other.question
+    }
+}
+
+impl Eq for OutcomeQuestion {}
+
+impl Hash for OutcomeQuestion {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.question.hash(state);
+    }
+}
+
 /// Parsed parameters for a recurring (automated) outcome event.
 ///
 /// Recurring outcome descriptions follow the format:
@@ -1356,6 +1400,31 @@ pub struct RecurringEvent {
     pub target_price: Decimal,
     /// Recurrence period (e.g., "1d", "15m")
     pub period: String,
+}
+
+impl PartialEq for RecurringEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.class == other.class
+            && self.underlying == other.underlying
+            && self.expiry == other.expiry
+            && self.target_price == other.target_price
+            && self.period == other.period
+    }
+}
+
+impl Eq for RecurringEvent {}
+
+impl Hash for RecurringEvent {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Decimal does not implement Hash, so we hash its normalized string
+        // representation. `normalized()` ensures trailing zeros are stripped
+        // so that equal decimals always produce the same hash.
+        self.class.hash(state);
+        self.underlying.hash(state);
+        self.expiry.hash(state);
+        self.target_price.normalize().to_string().hash(state);
+        self.period.hash(state);
+    }
 }
 
 impl std::str::FromStr for RecurringEvent {
@@ -1493,7 +1562,7 @@ pub async fn spot_markets(
 /// # async fn example() -> anyhow::Result<()> {
 /// let url = hypercore::mainnet_url();
 /// let client = reqwest::Client::new();
-/// let dexes = hypercore::perp_dexs(url, client).await?;
+/// let dexes = hypercore::perp_dexes(url, client).await?;
 ///
 /// for dex in dexes {
 ///     println!("DEX: {}", dex.name());
@@ -1501,7 +1570,7 @@ pub async fn spot_markets(
 /// # Ok(())
 /// # }
 /// ```
-pub async fn perp_dexs(
+pub async fn perp_dexes(
     core_url: impl IntoUrl,
     client: reqwest::Client,
 ) -> anyhow::Result<Vec<Dex>> {
@@ -1529,6 +1598,15 @@ pub async fn perp_dexs(
         .collect();
 
     Ok(dex_list)
+}
+
+/// Misspelled alias of [`perp_dexes`].
+#[deprecated(since = "0.2.9", note = "use perp_dexes instead")]
+pub async fn perp_dexs(
+    core_url: impl IntoUrl,
+    client: reqwest::Client,
+) -> anyhow::Result<Vec<Dex>> {
+    perp_dexes(core_url, client).await
 }
 
 #[derive(Deserialize)]
@@ -1757,7 +1835,7 @@ where
 /// Margin mode for a perpetual market.
 ///
 /// Determines how margin is managed across positions.
-#[derive(Debug, Copy, Clone, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MarginMode {
     /// Strict isolated margin — position can only use its allocated margin.

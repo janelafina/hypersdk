@@ -514,17 +514,6 @@ where
         Ok(address)
     }
 
-    /// Misspelled alias of [`Self::get_pool_address`].
-    #[deprecated(since = "0.2.9", note = "use get_pool_address instead")]
-    pub async fn get_pool_addres(
-        &self,
-        token0: Address,
-        token1: Address,
-        fee: u32,
-    ) -> Result<Address> {
-        self.get_pool_address(token0, token1, fee).await
-    }
-
     /// Get the price from a pool.
     pub async fn pool_price_sqrt_x96(
         &self,

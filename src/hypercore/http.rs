@@ -242,7 +242,7 @@ impl Client {
     /// let client = hypercore::mainnet();
     ///
     /// // Get available DEXes
-    /// let dexes = client.perp_dexs().await?;
+    /// let dexes = client.perp_dexes().await?;
     ///
     /// // Query markets from a specific DEX
     /// if let Some(dex) = dexes.first() {
@@ -270,7 +270,7 @@ impl Client {
     /// # use hypersdk::hypercore;
     /// # async fn example() -> anyhow::Result<()> {
     /// let client = hypercore::mainnet();
-    /// let dexes = client.perp_dexs().await?;
+    /// let dexes = client.perp_dexes().await?;
     ///
     /// for dex in dexes {
     ///     println!("DEX: {}", dex.name());
@@ -279,8 +279,15 @@ impl Client {
     /// # }
     /// ```
     #[inline(always)]
+    pub async fn perp_dexes(&self) -> Result<Vec<Dex>> {
+        super::perp_dexes(self.base_url.clone(), self.http_client.clone()).await
+    }
+
+    /// Misspelled alias of [`Self::perp_dexes`].
+    #[deprecated(since = "0.2.9", note = "use perp_dexes instead")]
+    #[inline(always)]
     pub async fn perp_dexs(&self) -> Result<Vec<Dex>> {
-        super::perp_dexs(self.base_url.clone(), self.http_client.clone()).await
+        self.perp_dexes().await
     }
 
     /// Fetches all available spot markets.
@@ -369,6 +376,33 @@ impl Client {
         super::outcomes(self.base_url.clone(), self.http_client.clone()).await
     }
 
+    /// Send an info request to `/info` and deserialize the JSON response.
+    ///
+    /// Private helper that encapsulates the repeated HTTP send → check status →
+    /// parse JSON workflow used across all unsigned info endpoint methods.
+    ///
+    /// The `label` parameter is included in error messages for debugging — it should
+    /// identify the calling endpoint (e.g., `"open_orders"`, `"user_balances"`).
+    async fn send_info_request<R>(&self, label: &str, req: &impl serde::Serialize) -> Result<R>
+    where
+        R: for<'de> Deserialize<'de>,
+    {
+        let mut api_url = self.base_url.clone();
+        api_url.set_path("/info");
+
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let bytes = res.bytes().await?;
+        let text = String::from_utf8_lossy(&bytes);
+
+        if !status.is_success() {
+            return Err(anyhow!("[{label}] HTTP {status} body={text}"));
+        }
+
+        serde_json::from_str(&text)
+            .map_err(|e| anyhow!("[{label}] decode failed: {e}; body={text}"))
+    }
+
     /// Returns all open orders for a user.
     ///
     /// # Example
@@ -393,25 +427,11 @@ impl Client {
         user: Address,
         dex_name: Option<String>,
     ) -> Result<Vec<BasicOrder>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::FrontendOpenOrders {
             user,
             dex: dex_name,
         };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("open_orders", &req).await
     }
 
     /// Returns mid prices for all perpetual markets.
@@ -434,44 +454,16 @@ impl Client {
     /// # }
     /// ```
     pub async fn all_mids(&self, dex_name: Option<String>) -> Result<HashMap<String, Decimal>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::AllMids { dex: dex_name };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("all_mids", &req).await
     }
 
     /// Retrieves historical orders for a user.
     ///
     /// Returns all past (non-open) orders, including filled, canceled, and expired orders.
     pub async fn historical_orders(&self, user: Address) -> Result<Vec<BasicOrder>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::HistoricalOrders { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("historical_orders", &req).await
     }
 
     /// Returns the user's fills.
@@ -479,22 +471,8 @@ impl Client {
     /// Retrieves all trade fills (executed orders) for a user, including the fill price, size,
     /// side, and associated order ID.
     pub async fn user_fills(&self, user: Address) -> Result<Vec<Fill>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::UserFills { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("user_fills", &req).await
     }
 
     /// Returns the user's fills filtered by time range.
@@ -513,26 +491,12 @@ impl Client {
         start_time: u64,
         end_time: Option<u64>,
     ) -> Result<Vec<Fill>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::UserFillsByTime {
             user,
             start_time,
             end_time,
         };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("user_fills_by_time", &req).await
     }
 
     /// Returns the status of an order.
@@ -549,9 +513,6 @@ impl Client {
         user: Address,
         oid: OidOrCloid,
     ) -> Result<Option<OrderUpdate<BasicOrder>>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         #[serde(tag = "status")]
@@ -561,16 +522,7 @@ impl Client {
         }
 
         let req = InfoRequest::OrderStatus { user, oid };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data: Response =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
+        let data: Response = self.send_info_request("order_status", &req).await?;
 
         Ok(match data {
             Response::Order { order } => Some(order),
@@ -627,32 +579,15 @@ impl Client {
         start_time: u64,
         end_time: u64,
     ) -> Result<Vec<super::types::Candle>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
-        let req = super::types::CandleSnapshotRequest {
-            coin: coin.into(),
-            interval,
-            start_time,
-            end_time,
+        let req = InfoRequest::CandleSnapshot {
+            req: super::types::CandleSnapshotRequest {
+                coin: coin.into(),
+                interval,
+                start_time,
+                end_time,
+            },
         };
-        let res = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::CandleSnapshot { req })
-            .send()
-            .await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("candle_snapshot", &req).await
     }
 
     /// Retrieves spot token balances for a user.
@@ -677,26 +612,13 @@ impl Client {
     /// # }
     /// ```
     pub async fn user_balances(&self, user: Address) -> Result<Vec<UserBalance>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         #[derive(Deserialize)]
         struct Balances {
             balances: Vec<UserBalance>,
         }
 
         let req = InfoRequest::SpotClearinghouseState { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data: Balances =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
+        let data: Balances = self.send_info_request("user_balances", &req).await?;
         Ok(data.balances)
     }
 
@@ -724,22 +646,8 @@ impl Client {
     /// # }
     /// ```
     pub async fn user_fees(&self, user: Address) -> Result<UserFees> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::UserFees { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("user_fees", &req).await
     }
 
     /// Retrieves the clearinghouse state for a user's perpetual positions.
@@ -785,24 +693,11 @@ impl Client {
         user: Address,
         dex_name: Option<String>,
     ) -> Result<ClearinghouseState> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::ClearinghouseState {
             user,
             dex: dex_name,
         };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(data)
+        self.send_info_request("clearinghouse_state", &req).await
     }
 
     /// Retrieves historical funding rates for a perpetual market.
@@ -848,26 +743,12 @@ impl Client {
         start_time: u64,
         end_time: Option<u64>,
     ) -> Result<Vec<FundingRate>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::FundingHistory {
             coin: coin.into(),
             start_time,
             end_time,
         };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("funding_history", &req).await
     }
 
     /// Retrieves the multi-signature wallet configuration for a user.
@@ -903,21 +784,8 @@ impl Client {
     /// # }
     /// ```
     pub async fn multi_sig_config(&self, user: Address) -> Result<MultiSigConfig> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::UserToMultiSigSigners { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let resp =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(resp)
+        self.send_info_request("multi_sig_config", &req).await
     }
 
     /// Get API agents for a user.
@@ -942,21 +810,8 @@ impl Client {
     /// }
     /// ```
     pub async fn api_agents(&self, user: Address) -> Result<Vec<ApiAgent>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::ExtraAgents { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let resp =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(resp)
+        self.send_info_request("api_agents", &req).await
     }
 
     /// Retrieve details for a vault.
@@ -999,24 +854,11 @@ impl Client {
         vault_address: Address,
         user: Option<Address>,
     ) -> Result<VaultDetails> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::VaultDetails {
             vault_address,
             user,
         };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let resp =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(resp)
+        self.send_info_request("vault_details", &req).await
     }
 
     /// Retrieve a user's vault deposits.
@@ -1048,21 +890,8 @@ impl Client {
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#retrieve-a-users-vault-deposits>
     pub async fn user_vault_equities(&self, user: Address) -> Result<Vec<UserVaultEquity>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::UserVaultEquities { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let resp =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(resp)
+        self.send_info_request("user_vault_equities", &req).await
     }
 
     /// Query a user's role.
@@ -1100,21 +929,8 @@ impl Client {
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#query-a-users-role>
     pub async fn user_role(&self, user: Address) -> Result<UserRole> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::UserRole { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let resp =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(resp)
+        self.send_info_request("user_role", &req).await
     }
 
     /// Retrieve a user's subaccounts.
@@ -1159,21 +975,8 @@ impl Client {
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#retrieve-a-users-subaccounts>
     pub async fn subaccounts(&self, user: Address) -> Result<Vec<SubAccount>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::SubAccounts { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let resp =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(resp)
+        self.send_info_request("subaccounts", &req).await
     }
 
     /// Place a gossip priority bid (Dutch auction for read priority).
@@ -1215,22 +1018,8 @@ impl Client {
     ///
     /// This is an unsigned info request sent to `/info`.
     pub async fn gossip_priority_auction_status(&self) -> Result<GossipPriorityAuctionStatus> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::GossipPriorityAuctionStatus;
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("gossip_priority_auction_status", &req).await
     }
 
     /// Schedules a cancellation of all open orders at a specified time.
@@ -2076,21 +1865,9 @@ impl Client {
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#retrieve-abstraction-mode>
     pub async fn abstraction_mode(&self, user: Address) -> Result<AbstractionMode> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::AbstractionMode { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
         // Response is a plain string like "unifiedAccount" or "disabled"
-        let s = serde_json::from_str::<String>(&text)
-            .map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
+        let s: String = self.send_info_request("abstraction_mode", &req).await?;
         AbstractionMode::from_api_str(&s)
             .map_err(|e| anyhow!("failed to parse abstraction mode: {e}"))
     }
@@ -2279,7 +2056,8 @@ impl Client {
             let res = http_client.post(url).json(&req).send().await?;
 
             let status = res.status();
-            let text = res.text().await?;
+            let bytes = res.bytes().await?;
+            let text = String::from_utf8_lossy(&bytes);
 
             if !status.is_success() {
                 return Err(anyhow!("HTTP {status} body={text}"));
@@ -2331,7 +2109,8 @@ impl Client {
             .await?;
 
         let status = res.status();
-        let text = res.text().await?;
+        let bytes = res.bytes().await?;
+        let text = String::from_utf8_lossy(&bytes);
 
         if !status.is_success() {
             return Err(anyhow!("HTTP {status} body={text}"));

@@ -49,7 +49,11 @@ fn print_auction_status(status: &GossipPriorityAuctionStatus) {
         let progress = (elapsed as f64 / slot.duration_seconds as f64).clamp(0.0, 1.0);
 
         let start: Decimal = slot.start_gas.parse().unwrap_or_default();
-        let end: Decimal = slot.end_gas.as_ref().and_then(|s| s.parse().ok()).unwrap_or(start);
+        let end: Decimal = slot
+            .end_gas
+            .as_ref()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(start);
         let current_price =
             start - (start - end) * Decimal::from_f64_retain(progress).unwrap_or_default();
 
@@ -105,10 +109,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!(
         "\nBidding on slot {} for IP {} with max {} HYPE ({} decimals)",
-        args.slot,
-        args.ip,
-        args.max,
-        decimals
+        args.slot, args.ip, args.max, decimals
     );
 
     // 3. Submit the signed bid to /exchange.

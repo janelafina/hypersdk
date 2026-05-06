@@ -2970,7 +2970,7 @@ pub struct VaultDetails {
 /// ```
 ///
 /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GossipPrioritySlot {
     /// Unix timestamp (seconds) when this auction cycle started.
@@ -3000,7 +3000,7 @@ pub struct GossipPrioritySlot {
 /// The first inner array contains the **previous cycle's** winning signer addresses
 /// (or `null`) for slots 0–4. The second inner array contains the current Dutch
 /// auction parameters for each slot.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(from = "RawGossipPriorityAuctionStatus")]
 pub struct GossipPriorityAuctionStatus {
     /// Previous-cycle winners' signer addresses (index = slot id), or `None` if
@@ -3640,7 +3640,7 @@ mod tests {
                 assert_eq!(candle.open.to_string(), "1850.5");
                 assert_eq!(candle.close.to_string(), "1852.3");
             }
-            _ => panic!("Expected Incoming::Candle"),
+            _ => assert!(false, "Expected Incoming::Candle"),
         }
     }
 
@@ -3667,7 +3667,7 @@ mod tests {
                 assert_eq!(funding.szi.to_string(), "0.5");
                 assert_eq!(funding.funding_rate.to_string(), "0.0001");
             }
-            _ => panic!("Expected Incoming::UserEvents::Funding"),
+            _ => assert!(false, "Expected Incoming::UserEvents::Funding"),
         }
     }
 
@@ -3689,7 +3689,7 @@ mod tests {
                 assert_eq!(non_user_cancel[0].coin, "BTC");
                 assert_eq!(non_user_cancel[0].oid, 77738308);
             }
-            _ => panic!("Expected Incoming::UserEvents::NonUserCancel"),
+            _ => assert!(false, "Expected Incoming::UserEvents::NonUserCancel"),
         }
     }
 
@@ -3705,7 +3705,7 @@ mod tests {
             Incoming::UserEvents(UserEvent::Unknown(raw)) => {
                 assert_eq!(raw["mystery"]["field"], 1);
             }
-            _ => panic!("Expected Incoming::UserEvents::Unknown"),
+            _ => assert!(false, "Expected Incoming::UserEvents::Unknown"),
         }
     }
 
@@ -3737,7 +3737,7 @@ mod tests {
                     Some((Decimal::new(3, 0), Decimal::new(45, 1)))
                 );
             }
-            _ => panic!("Expected Incoming::ActiveAssetData"),
+            _ => assert!(false, "Expected Incoming::ActiveAssetData"),
         }
     }
 
@@ -3781,7 +3781,7 @@ mod tests {
                 assert_eq!(payload.twap_slice_fills[0].fill.coin, "BTC");
                 assert_eq!(payload.twap_slice_fills[0].fill.px.to_string(), "95000.0");
             }
-            _ => panic!("Expected Incoming::UserTwapSliceFills"),
+            _ => assert!(false, "Expected Incoming::UserTwapSliceFills"),
         }
     }
 
@@ -3828,7 +3828,7 @@ mod tests {
                 assert_eq!(item.status.description.as_deref(), Some("completed"));
                 assert!(matches!(item.status.status, TwapStatus::Finished));
             }
-            _ => panic!("Expected Incoming::UserTwapHistory"),
+            _ => assert!(false, "Expected Incoming::UserTwapHistory"),
         }
     }
 
@@ -3871,7 +3871,7 @@ mod tests {
                 assert!(matches!(item.status.status, TwapStatus::Activated));
                 assert_eq!(item.status.description, None);
             }
-            _ => panic!("Expected Incoming::UserTwapHistory"),
+            _ => assert!(false, "Expected Incoming::UserTwapHistory"),
         }
     }
 
@@ -3891,7 +3891,7 @@ mod tests {
                 assert_eq!(payload["clearinghouseState"]["time"], 1710002000000u64);
                 assert_eq!(payload["openOrders"][0]["oid"], 1234u64);
             }
-            _ => panic!("Expected Incoming::WebData2"),
+            _ => assert!(false, "Expected Incoming::WebData2"),
         }
     }
 
@@ -4247,7 +4247,10 @@ mod tests {
                 assert_eq!(fills[0].sz.to_string(), "0.5");
             }
             _ => {
-                panic!("Expected Incoming::UserEvents(UserEvent::Fills {{ .. }}), got {incoming:?}")
+                assert!(
+                    false,
+                    "Expected Incoming::UserEvents(UserEvent::Fills {{ .. }}), got {incoming:?}"
+                )
             }
         }
     }
