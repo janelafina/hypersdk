@@ -5,6 +5,8 @@
 //! [`Id`], [`Market`], and [`MarketParams`] types are created to avoid
 //! the redundant definitions of such types.
 
+#![allow(clippy::too_many_arguments)]
+
 use alloy::sol;
 
 macro_rules! transmute_this {

@@ -1,3 +1,8 @@
+//! List all perpetual markets grouped by their DEX.
+//!
+//! Queries the perp dexs endpoint and prints each market's name, index, collateral,
+//! growth mode, and aligned quote token along with deployer fee scale information.
+
 use hypersdk::hypercore;
 
 #[tokio::main]

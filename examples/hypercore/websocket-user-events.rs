@@ -42,15 +42,25 @@ async fn main() -> anyhow::Result<()> {
     let _ = simple_logger::init_with_level(log::Level::Info);
     let args = Args::parse();
 
-    let mut ws = hypercore::mainnet_ws();
-    ws.subscribe(Subscription::UserEvents { user: args.user });
-    ws.subscribe(Subscription::UserTwapSliceFills { user: args.user });
-    ws.subscribe(Subscription::UserTwapHistory { user: args.user });
+    let client = hypercore::mainnet();
+
+    let role = client.user_role(args.user).await?;
+
+    let user = match role {
+        hypercore::UserRole::SubAccount { master } => Some(master),
+        _ => None,
+    }
+    .unwrap_or(args.user);
+
+    let mut ws = client.websocket();
+    ws.subscribe(Subscription::UserEvents { user });
+    ws.subscribe(Subscription::UserTwapSliceFills { user });
+    ws.subscribe(Subscription::UserTwapHistory { user });
     ws.subscribe(Subscription::ActiveAssetData {
-        user: args.user,
+        user,
         coin: args.coin.clone(),
     });
-    ws.subscribe(Subscription::WebData2 { user: args.user, dex: None });
+    ws.subscribe(Subscription::WebData2 { user, dex: None });
 
     log::info!(
         "Subscribed for user={} coin={}. Waiting for events...",

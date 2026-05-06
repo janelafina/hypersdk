@@ -1,3 +1,8 @@
+//! Transfer USDC from the exchange spot wallet to the perps wallet.
+//!
+//! Demonstrates moving USDC between internal exchange balances — specifically from the
+//! spot vault into the perpetuals vault for margin on derivative positions.
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;

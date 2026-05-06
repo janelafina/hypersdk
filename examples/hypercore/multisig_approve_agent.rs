@@ -1,3 +1,8 @@
+//! Approve an agent wallet through a multisig account on Hyperliquid.
+//!
+//! Demonstrates how multiple signers can collectively authorize an agent that acts on
+//! behalf of a multisig wallet using the `multi_sig` API flow.
+
 use std::{
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},

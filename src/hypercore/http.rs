@@ -57,7 +57,7 @@ use url::Url;
 
 use super::{AssetTarget, signing::*};
 use crate::hypercore::{
-    ActionError, ApiAgent, CandleInterval, Chain, Cloid, Dex, GossipPriorityAuctionStatus,
+    ActionError, ApiAgent, CandleInterval, Chain, Cloid, Dex, GossipPriorityAuctionStatus, Market,
     MultiSigConfig, OidOrCloid, OutcomeMeta, PerpMarket, Signature, SpotMarket, SpotToken,
     api::{
         Action, ActionRequest, ApproveAgent, ConvertToMultiSigUser, GossipPriorityBid, OkResponse,
@@ -65,10 +65,11 @@ use crate::hypercore::{
     },
     mainnet_url, testnet_url,
     types::{
-        BasicOrder, BatchCancel, BatchCancelCloid, BatchModify, BatchOrder, ClearinghouseState,
-        Fill, FundingRate, InfoRequest, OrderResponseStatus, OrderUpdate, ScheduleCancel,
-        SendAsset, SendToken, SpotSend, SubAccount, UsdSend, UserBalance, UserFees, UserRole,
-        UserVaultEquity, VaultDetails,
+        AbstractionMode, AgentSendAsset, BasicOrder, BatchCancel, BatchCancelCloid, BatchModify,
+        BatchOrder, ClearinghouseState, Fill, FundingRate, InfoRequest, OrderGrouping,
+        OrderRequest, OrderResponseStatus, OrderTypePlacement, OrderUpdate, ScheduleCancel,
+        SendAsset, SendToken, SpotSend, SubAccount, TimeInForce, UsdSend, UserBalance, UserFees,
+        UserRole, UserSetAbstractionAction, UserVaultEquity, VaultDetails,
     },
 };
 
@@ -152,6 +153,10 @@ impl Client {
         Self { base_url, ..self }
     }
 
+    /// Sets a custom [`reqwest::Client`] for HTTP requests.
+    ///
+    /// Use this when you need custom configuration such as proxies, custom TLS settings,
+    /// connection pooling, or timeout policies.
     #[must_use]
     pub fn with_http_client(self, http_client: reqwest::Client) -> Self {
         Self {
@@ -237,7 +242,7 @@ impl Client {
     /// let client = hypercore::mainnet();
     ///
     /// // Get available DEXes
-    /// let dexes = client.perp_dexs().await?;
+    /// let dexes = client.perp_dexes().await?;
     ///
     /// // Query markets from a specific DEX
     /// if let Some(dex) = dexes.first() {
@@ -265,7 +270,7 @@ impl Client {
     /// # use hypersdk::hypercore;
     /// # async fn example() -> anyhow::Result<()> {
     /// let client = hypercore::mainnet();
-    /// let dexes = client.perp_dexs().await?;
+    /// let dexes = client.perp_dexes().await?;
     ///
     /// for dex in dexes {
     ///     println!("DEX: {}", dex.name());
@@ -274,8 +279,15 @@ impl Client {
     /// # }
     /// ```
     #[inline(always)]
+    pub async fn perp_dexes(&self) -> Result<Vec<Dex>> {
+        super::perp_dexes(self.base_url.clone(), self.http_client.clone()).await
+    }
+
+    /// Misspelled alias of [`Self::perp_dexes`].
+    #[deprecated(since = "0.2.9", note = "use perp_dexes instead")]
+    #[inline(always)]
     pub async fn perp_dexs(&self) -> Result<Vec<Dex>> {
-        super::perp_dexs(self.base_url.clone(), self.http_client.clone()).await
+        self.perp_dexes().await
     }
 
     /// Fetches all available spot markets.
@@ -340,6 +352,57 @@ impl Client {
         super::outcome_meta(self.base_url.clone(), self.http_client.clone()).await
     }
 
+    /// Fetch all outcome markets, one per side.
+    ///
+    /// Returns a list of [`super::OutcomeMarket`] with the market index
+    /// derived from outcome ID and side position.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hypersdk::hypercore;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let client = hypercore::testnet();
+    /// let markets = client.outcomes().await?;
+    /// for m in markets {
+    ///     println!("{}: O{} {} (market {})", m.coin(), m.info.outcome, m.side, m.market);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub async fn outcomes(&self) -> Result<Vec<super::OutcomeMarket>> {
+        super::outcomes(self.base_url.clone(), self.http_client.clone()).await
+    }
+
+    /// Send an info request to `/info` and deserialize the JSON response.
+    ///
+    /// Private helper that encapsulates the repeated HTTP send → check status →
+    /// parse JSON workflow used across all unsigned info endpoint methods.
+    ///
+    /// The `label` parameter is included in error messages for debugging — it should
+    /// identify the calling endpoint (e.g., `"open_orders"`, `"user_balances"`).
+    async fn send_info_request<R>(&self, label: &str, req: &impl serde::Serialize) -> Result<R>
+    where
+        R: for<'de> Deserialize<'de>,
+    {
+        let mut api_url = self.base_url.clone();
+        api_url.set_path("/info");
+
+        let res = self.http_client.post(api_url).json(&req).send().await?;
+        let status = res.status();
+        let bytes = res.bytes().await?;
+        let text = String::from_utf8_lossy(&bytes);
+
+        if !status.is_success() {
+            return Err(anyhow!("[{label}] HTTP {status} body={text}"));
+        }
+
+        serde_json::from_str(&text)
+            .map_err(|e| anyhow!("[{label}] decode failed: {e}; body={text}"))
+    }
+
     /// Returns all open orders for a user.
     ///
     /// # Example
@@ -364,25 +427,11 @@ impl Client {
         user: Address,
         dex_name: Option<String>,
     ) -> Result<Vec<BasicOrder>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::FrontendOpenOrders {
             user,
             dex: dex_name,
         };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("open_orders", &req).await
     }
 
     /// Returns mid prices for all perpetual markets.
@@ -405,102 +454,65 @@ impl Client {
     /// # }
     /// ```
     pub async fn all_mids(&self, dex_name: Option<String>) -> Result<HashMap<String, Decimal>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::AllMids { dex: dex_name };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("all_mids", &req).await
     }
 
-    /// Returns the user's historical orders.
+    /// Retrieves historical orders for a user.
+    ///
+    /// Returns all past (non-open) orders, including filled, canceled, and expired orders.
     pub async fn historical_orders(&self, user: Address) -> Result<Vec<BasicOrder>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::HistoricalOrders { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("historical_orders", &req).await
     }
 
     /// Returns the user's fills.
+    ///
+    /// Retrieves all trade fills (executed orders) for a user, including the fill price, size,
+    /// side, and associated order ID.
     pub async fn user_fills(&self, user: Address) -> Result<Vec<Fill>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::UserFills { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("user_fills", &req).await
     }
 
-    /// Returns the user's fills by time.
+    /// Returns the user's fills filtered by time range.
+    ///
+    /// Retrieves all trade fills for a user within the specified time window.
+    /// This is useful for P&L calculation and trade history analysis.
+    ///
+    /// # Parameters
+    ///
+    /// - `user`: The address to query fills for
+    /// - `start_time`: Start timestamp in milliseconds (inclusive)
+    /// - `end_time`: Optional end timestamp in milliseconds (inclusive). Defaults to now if `None`.
     pub async fn user_fills_by_time(
         &self,
         user: Address,
         start_time: u64,
         end_time: Option<u64>,
     ) -> Result<Vec<Fill>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::UserFillsByTime {
             user,
             start_time,
             end_time,
         };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("user_fills_by_time", &req).await
     }
 
     /// Returns the status of an order.
+    ///
+    /// Checks whether an order is still open, filled, canceled, or unknown.
+    /// Returns `None` if the order ID is not found.
+    ///
+    /// # Parameters
+    ///
+    /// - `user`: The address that placed the order
+    /// - `oid`: Either an exchange-assigned order ID (OID) or a client-assigned order ID (CLOID)
     pub async fn order_status(
         &self,
         user: Address,
         oid: OidOrCloid,
     ) -> Result<Option<OrderUpdate<BasicOrder>>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         #[serde(tag = "status")]
@@ -510,16 +522,7 @@ impl Client {
         }
 
         let req = InfoRequest::OrderStatus { user, oid };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data: Response =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
+        let data: Response = self.send_info_request("order_status", &req).await?;
 
         Ok(match data {
             Response::Order { order } => Some(order),
@@ -576,32 +579,15 @@ impl Client {
         start_time: u64,
         end_time: u64,
     ) -> Result<Vec<super::types::Candle>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
-        let req = super::types::CandleSnapshotRequest {
-            coin: coin.into(),
-            interval,
-            start_time,
-            end_time,
+        let req = InfoRequest::CandleSnapshot {
+            req: super::types::CandleSnapshotRequest {
+                coin: coin.into(),
+                interval,
+                start_time,
+                end_time,
+            },
         };
-        let res = self
-            .http_client
-            .post(api_url)
-            .json(&InfoRequest::CandleSnapshot { req })
-            .send()
-            .await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("candle_snapshot", &req).await
     }
 
     /// Retrieves spot token balances for a user.
@@ -626,26 +612,13 @@ impl Client {
     /// # }
     /// ```
     pub async fn user_balances(&self, user: Address) -> Result<Vec<UserBalance>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         #[derive(Deserialize)]
         struct Balances {
             balances: Vec<UserBalance>,
         }
 
         let req = InfoRequest::SpotClearinghouseState { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data: Balances =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
+        let data: Balances = self.send_info_request("user_balances", &req).await?;
         Ok(data.balances)
     }
 
@@ -673,22 +646,8 @@ impl Client {
     /// # }
     /// ```
     pub async fn user_fees(&self, user: Address) -> Result<UserFees> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::UserFees { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("user_fees", &req).await
     }
 
     /// Retrieves the clearinghouse state for a user's perpetual positions.
@@ -734,24 +693,11 @@ impl Client {
         user: Address,
         dex_name: Option<String>,
     ) -> Result<ClearinghouseState> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::ClearinghouseState {
             user,
             dex: dex_name,
         };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(data)
+        self.send_info_request("clearinghouse_state", &req).await
     }
 
     /// Retrieves historical funding rates for a perpetual market.
@@ -797,26 +743,12 @@ impl Client {
         start_time: u64,
         end_time: Option<u64>,
     ) -> Result<Vec<FundingRate>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::FundingHistory {
             coin: coin.into(),
             start_time,
             end_time,
         };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("funding_history", &req).await
     }
 
     /// Retrieves the multi-signature wallet configuration for a user.
@@ -852,21 +784,8 @@ impl Client {
     /// # }
     /// ```
     pub async fn multi_sig_config(&self, user: Address) -> Result<MultiSigConfig> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::UserToMultiSigSigners { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let resp =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(resp)
+        self.send_info_request("multi_sig_config", &req).await
     }
 
     /// Get API agents for a user.
@@ -891,21 +810,8 @@ impl Client {
     /// }
     /// ```
     pub async fn api_agents(&self, user: Address) -> Result<Vec<ApiAgent>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::ExtraAgents { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let resp =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(resp)
+        self.send_info_request("api_agents", &req).await
     }
 
     /// Retrieve details for a vault.
@@ -948,24 +854,11 @@ impl Client {
         vault_address: Address,
         user: Option<Address>,
     ) -> Result<VaultDetails> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::VaultDetails {
             vault_address,
             user,
         };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let resp =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(resp)
+        self.send_info_request("vault_details", &req).await
     }
 
     /// Retrieve a user's vault deposits.
@@ -997,21 +890,8 @@ impl Client {
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#retrieve-a-users-vault-deposits>
     pub async fn user_vault_equities(&self, user: Address) -> Result<Vec<UserVaultEquity>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::UserVaultEquities { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let resp =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(resp)
+        self.send_info_request("user_vault_equities", &req).await
     }
 
     /// Query a user's role.
@@ -1049,21 +929,8 @@ impl Client {
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#query-a-users-role>
     pub async fn user_role(&self, user: Address) -> Result<UserRole> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::UserRole { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let resp =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(resp)
+        self.send_info_request("user_role", &req).await
     }
 
     /// Retrieve a user's subaccounts.
@@ -1108,21 +975,8 @@ impl Client {
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#retrieve-a-users-subaccounts>
     pub async fn subaccounts(&self, user: Address) -> Result<Vec<SubAccount>> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::SubAccounts { user };
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let resp =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-        Ok(resp)
+        self.send_info_request("subaccounts", &req).await
     }
 
     /// Place a gossip priority bid (Dutch auction for read priority).
@@ -1136,6 +990,7 @@ impl Client {
     /// = `U256::from(50u128) * U256::from(1e18)`.
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>
+    #[allow(clippy::too_many_arguments)]
     pub async fn gossip_priority_bid<S: SignerSync>(
         &self,
         signer: &S,
@@ -1163,25 +1018,24 @@ impl Client {
     ///
     /// This is an unsigned info request sent to `/info`.
     pub async fn gossip_priority_auction_status(&self) -> Result<GossipPriorityAuctionStatus> {
-        let mut api_url = self.base_url.clone();
-        api_url.set_path("/info");
-
         let req = InfoRequest::GossipPriorityAuctionStatus;
-        let res = self.http_client.post(api_url).json(&req).send().await?;
-        let status = res.status();
-        let text = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} body={text}"));
-        }
-
-        let data =
-            serde_json::from_str(&text).map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
-
-        Ok(data)
+        self.send_info_request("gossip_priority_auction_status", &req)
+            .await
     }
 
-    /// Schedule cancellation.
+    /// Schedules a cancellation of all open orders at a specified time.
+    ///
+    /// This is a signed action that tells the exchange to cancel all of the user's
+    /// open orders at the given timestamp. Useful for risk management — for example,
+    /// scheduling an end-of-day order sweep.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the schedule action
+    /// - `nonce`: Unique nonce for this request
+    /// - `when`: The UTC time at which all open orders should be canceled
+    /// - `vault_address`: Optional vault/subaccount address
+    /// - `expires_after`: Optional expiration time for the request itself
     pub async fn schedule_cancel<S: SignerSync>(
         &self,
         signer: &S,
@@ -1268,7 +1122,84 @@ impl Client {
         }
     }
 
-    /// Cancel a batch of orders.
+    /// Place a market buy or sell order for any tradeable market.
+    ///
+    /// Uses Hyperliquid's native [`TimeInForce::FrontendMarket`] order type, which
+    /// fills immediately up to the provided worst acceptable limit price.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: Private key signer for EIP-712 signatures
+    /// - `market`: Market to trade on — pass a [`PerpMarket`], [`SpotMarket`], or [`OutcomeMarket`]
+    /// - `is_buy`: `true` for buy, `false` for sell
+    /// - `limit_px`: Worst acceptable execution price. Round it to the market tick before calling.
+    /// - `size`: Position size in base asset units
+    /// - `nonce`: Unique nonce (typically current timestamp in milliseconds)
+    /// - `vault_address`: Optional vault address if trading on behalf of a vault
+    /// - `expires_after`: Optional expiration timestamp for the request
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hypersdk::hypercore::{self, NonceHandler};
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let client = hypercore::testnet();
+    /// let signer: hypercore::PrivateKeySigner = "your_key".parse()?;
+    /// let nonce_handler = NonceHandler::default();
+    ///
+    /// // Find ETH perpetual market
+    /// let perps = client.perps().await?;
+    /// let eth = perps.iter().find(|m| m.name == "ETH").expect("ETH");
+    ///
+    /// // Market buy 0.01 ETH, accepting fills up to 3500 USDC
+    /// let statuses = client
+    ///     .market_open(&signer, eth, true, rust_decimal::dec!(3500), rust_decimal::dec!(0.01), nonce_handler.next(), None, None)
+    ///     .await?;
+    ///
+    /// for status in &statuses {
+    ///     println!("Order result: {:?}", status);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[allow(clippy::too_many_arguments)]
+    pub async fn market_open<S: SignerSync>(
+        &self,
+        signer: &S,
+        market: impl Market,
+        is_buy: bool,
+        limit_px: Decimal,
+        size: Decimal,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> Result<Vec<OrderResponseStatus>> {
+        let batch = BatchOrder {
+            orders: vec![OrderRequest {
+                asset: market.asset_index(),
+                is_buy,
+                limit_px,
+                sz: size,
+                reduce_only: false,
+                order_type: OrderTypePlacement::Limit {
+                    tif: TimeInForce::Gtc,
+                },
+                cloid: Default::default(),
+            }],
+            grouping: OrderGrouping::Na,
+        };
+
+        self.place(signer, batch, nonce, vault_address, expires_after)
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))
+    }
+
+    /// Cancel a batch of orders by exchange-assigned order ID (OID).
+    ///
+    /// Each cancel request specifies an asset and an order ID. Returns the status
+    /// for each cancellation attempt. Errors are wrapped in [`ActionError`] with the
+    /// failed OIDs accessible via `.ids()`.
     pub fn cancel<S: SignerSync>(
         &self,
         signer: &S,
@@ -1299,7 +1230,11 @@ impl Client {
         }
     }
 
-    /// Cancel a batch of orders by cloid.
+    /// Cancel a batch of orders by client-assigned order ID (CLOID).
+    ///
+    /// Each cancel request specifies an asset and a client order ID. Returns the status
+    /// for each cancellation attempt. Errors are wrapped in [`ActionError`] with the
+    /// failed CLOIDs accessible via `.ids()`.
     pub fn cancel_by_cloid<S: SignerSync>(
         &self,
         signer: &S,
@@ -1330,7 +1265,12 @@ impl Client {
         }
     }
 
-    /// Modify a batch of orders.
+    /// Modify a batch of existing orders (change price, size, or both).
+    ///
+    /// Each modify request references an order by OID or CLOID and specifies the
+    /// new price (`limit_px`) and/or size (`sz`). If only one field is changed, set
+    /// the other to its current value. Returns the status for each modification attempt.
+    /// Errors are wrapped in [`ActionError`] with the failed order IDs accessible via `.ids()`.
     pub fn modify<S: SignerSync>(
         &self,
         signer: &S,
@@ -1490,7 +1430,17 @@ impl Client {
         }
     }
 
-    /// Helper function to transfer from spot core to EVM.
+    /// Helper function to transfer from spot Core balance to HyperEVM.
+    ///
+    /// Sends the specified token from the signer's spot balance on HyperCore to their
+    /// corresponding address on HyperEVM. The token must have a cross-chain address configured.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the transfer
+    /// - `token`: The [`SpotToken`] to transfer (must have a cross-chain address)
+    /// - `amount`: Amount to transfer
+    /// - `nonce`: Unique nonce for this request
     pub async fn transfer_to_evm<S: Send + SignerSync>(
         &self,
         signer: &S,
@@ -1515,9 +1465,17 @@ impl Client {
         .await
     }
 
-    /// Helper function to transfer from perps to spot.
+    /// Helper function to transfer from perpetual balance to spot.
     ///
+    /// Moves USDC from the signer's perpetual (perps) balance to their spot balance.
     /// Only USDC is accepted as `token`.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the transfer
+    /// - `token`: Must be USDC — other tokens return an error
+    /// - `amount`: Amount to transfer
+    /// - `nonce`: Unique nonce for this request
     pub async fn transfer_to_spot<S: Signer + SignerSync>(
         &self,
         signer: &S,
@@ -1548,9 +1506,17 @@ impl Client {
         .await
     }
 
-    /// Helper function to transfer from spot to perps.
+    /// Helper function to transfer from spot to perpetual balance.
     ///
+    /// Moves USDC from the signer's spot balance to their perpetual (perps) balance.
     /// Only USDC is accepted as `token`.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the transfer
+    /// - `token`: Must be USDC — other tokens return an error
+    /// - `amount`: Amount to transfer
+    /// - `nonce`: Unique nonce for this request
     pub async fn transfer_to_perps<S: Signer + SignerSync>(
         &self,
         signer: &S,
@@ -1581,9 +1547,17 @@ impl Client {
         .await
     }
 
-    /// Send USDC to another address.
+    /// Send USDC from perpetual balance to another address (perp-to-perp transfer).
     ///
-    /// Perp <> Perp transfers.
+    /// This performs a core USDC transfer between perpetual balances. The amount is
+    /// deducted from the signer's perps balance and credited to the destination's
+    /// perps balance.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the transfer
+    /// - `send`: A [`UsdSend`] specifying destination, amount, and timestamp
+    /// - `nonce`: Unique nonce for this request
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#core-usdc-transfer>
     pub async fn send_usdc<S: SignerSync>(
@@ -1641,9 +1615,16 @@ impl Client {
         }
     }
 
-    /// Send USDC to another address.
+    /// Send USDC between spot and DEX/subaccount balances.
     ///
-    /// Spot <> DEX or Subaccount.
+    /// This performs a `SendAsset` action for spot-to-DEX, DEX-to-spot, or subaccount transfers.
+    /// The source and destination are determined by the [`SendAsset`] fields.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the transfer
+    /// - `send`: A [`SendAsset`] specifying source/destination DEX, token, amount, etc.
+    /// - `nonce`: Unique nonce for this request
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#send-asset>
     pub fn send_asset<S: SignerSync>(
@@ -1667,9 +1648,44 @@ impl Client {
         }
     }
 
-    /// Spot transfer.
+    /// Agent-signed send asset.
     ///
-    /// Spot <> Spot.
+    /// Same purpose as [`send_asset`](Self::send_asset) but signed by an agent
+    /// (API wallet) via L1-action signing. The destination must equal the
+    /// source address, so this is limited to self-transfers across DEXes, the
+    /// spot balance, or between subaccounts of the same master account.
+    ///
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#agent-send-asset>
+    pub fn agent_send_asset<S: SignerSync>(
+        &self,
+        signer: &S,
+        send: AgentSendAsset,
+        nonce: u64,
+    ) -> impl Future<Output = Result<()>> + Send + 'static {
+        let future = self.sign_and_send_sync(signer, send.into_action(), nonce, None, None);
+
+        async move {
+            let resp = future.await?;
+            match resp {
+                Response::Ok(OkResponse::Default) => Ok(()),
+                Response::Err(err) => {
+                    anyhow::bail!("agent_send_asset: {err}")
+                }
+                _ => anyhow::bail!("agent_send_asset: unexpected response type: {resp:?}"),
+            }
+        }
+    }
+
+    /// Send a spot token to another address (spot-to-spot transfer).
+    ///
+    /// Transfers any spot token between accounts. Unlike [`send_usdc`](Self::send_usdc)
+    /// which only handles USDC on perpetual balances, this works with any spot token.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the transfer
+    /// - `send`: A [`SpotSend`] specifying destination, token, and amount
+    /// - `nonce`: Unique nonce for this request
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#core-spot-transfer>
     pub fn spot_send<S: SignerSync>(
@@ -1721,6 +1737,7 @@ impl Client {
     /// // Set BTC (asset 0) to 10x cross margin
     /// client.update_leverage(&signer, 0, true, 10, nonce_handler.next(), None, None).await?;
     /// ```
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_leverage<S: SignerSync>(
         &self,
         signer: &S,
@@ -1754,7 +1771,17 @@ impl Client {
         }
     }
 
-    /// Toggle big blocks or not idk.
+    /// Toggle the EVM user "big blocks" setting via signed action.
+    ///
+    /// Enables or disables big block processing for the user's HyperEVM account.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the action
+    /// - `toggle`: `true` to enable big blocks, `false` to disable
+    /// - `nonce`: Unique nonce for this request
+    /// - `vault_address`: Optional vault/subaccount address
+    /// - `expires_after`: Optional expiration time for the request
     pub async fn evm_user_modify<S: SignerSync>(
         &self,
         signer: &S,
@@ -1784,7 +1811,18 @@ impl Client {
         }
     }
 
-    /// Invalidate a nonce.
+    /// Invalidate a nonce by sending a no-op action.
+    ///
+    /// This burns a nonce without performing any state change. Useful for ensuring
+    /// monotonically increasing nonces stay in sync when some transactions are skipped
+    /// or when you need to advance the nonce past a specific value.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The wallet signing the noop
+    /// - `nonce`: The nonce to invalidate
+    /// - `vault_address`: Optional vault/subaccount address
+    /// - `expires_after`: Optional expiration time for the request
     pub async fn noop<S: SignerSync>(
         &self,
         signer: &S,
@@ -1802,6 +1840,132 @@ impl Client {
                 anyhow::bail!("noop: {err}")
             }
             _ => anyhow::bail!("noop: unexpected response type: {resp:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Account Abstraction Mode actions
+    // -----------------------------------------------------------------
+
+    /// Query the current account abstraction mode for a user.
+    ///
+    /// Sends an info request to `/info` with type `"abstraction"`.
+    /// Returns the current mode as parsed by [`AbstractionMode`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hypersdk::hypercore;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let client = hypercore::mainnet();
+    /// let user: hypersdk::Address = "0x...".parse()?;
+    /// let mode = client.abstraction_mode(user).await?;
+    /// println!("Current mode: {mode}");
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#retrieve-abstraction-mode>
+    pub async fn abstraction_mode(&self, user: Address) -> Result<AbstractionMode> {
+        let req = InfoRequest::AbstractionMode { user };
+        // Response is a plain string like "unifiedAccount" or "disabled"
+        let s: String = self.send_info_request("abstraction_mode", &req).await?;
+        AbstractionMode::from_api_str(&s)
+            .map_err(|e| anyhow!("failed to parse abstraction mode: {e}"))
+    }
+
+    /// Set abstraction mode via agent-signed action (L1/RMP signing).
+    ///
+    /// Changes the account's abstraction mode to one of:
+    /// - [`AbstractionMode::Standard`] (`"i"`): Separate perp/spot balances
+    /// - [`AbstractionMode::UnifiedAccount`] (`"u"`): Unified per-asset balance
+    /// - [`AbstractionMode::PortfolioMargin`] (`"p"`): Portfolio margin (pre-alpha)
+    ///
+    /// This uses RMP-based signing (Agent wrapper) — suitable for API wallets / agents.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The agent/API wallet signer
+    /// - `mode`: The target abstraction mode
+    /// - `nonce`: Unique nonce (typically current timestamp in ms)
+    /// - `vault_address`: Optional subaccount/vault address
+    /// - `expires_after`: Optional expiration time
+    ///
+    /// # Important Notes
+    ///
+    /// - Builder code addresses **must** be in Standard mode to accrue builder fees
+    /// - Unified Account and Portfolio Margin have a 50k daily action limit
+    /// - Standard mode has no action limits
+    ///
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#set-account-abstraction-mode-agent-signed>
+    pub async fn agent_set_abstraction<S: SignerSync>(
+        &self,
+        signer: &S,
+        mode: AbstractionMode,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        let action = Action::AgentSetAbstraction { abstraction: mode };
+        let resp = self
+            .sign_and_send_sync(signer, action, nonce, vault_address, expires_after)
+            .await?;
+
+        match resp {
+            Response::Ok(OkResponse::Default) => Ok(()),
+            Response::Err(err) => anyhow::bail!("agent_set_abstraction: {err}"),
+            _ => anyhow::bail!("agent_set_abstraction: unexpected response type: {resp:?}"),
+        }
+    }
+
+    /// Set abstraction mode via user-signed action (EIP-712 signing).
+    ///
+    /// User-signed variant: requires EIP-712 signing with the `HyperliquidSignTransaction` domain.
+    /// This is used when the main account owner wants to change their own abstraction mode
+    /// directly (not through an API agent).
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The account owner's signer (must match the `user` address)
+    /// - `user`: The user address to set the mode for (lowercase hex)
+    /// - `mode`: The target abstraction mode
+    /// - `nonce`: Unique nonce (typically current timestamp in ms)
+    ///
+    /// Note: user-signed actions do not support `vault_address` or `expires_after`.
+    ///
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#set-account-abstraction-mode-user-signed>
+    pub async fn user_set_abstraction<S: Signer + Send + Sync>(
+        &self,
+        signer: &S,
+        user: Address,
+        mode: AbstractionMode,
+        nonce: u64,
+    ) -> Result<()> {
+        let signature_chain_id = self.chain.arbitrum_id().to_owned();
+
+        let action = UserSetAbstractionAction {
+            signature_chain_id,
+            hyperliquid_chain: self.chain,
+            user,
+            abstraction: mode,
+            nonce,
+        };
+
+        let resp = self
+            .sign_and_send(
+                signer,
+                Action::UserSetAbstraction(action),
+                nonce,
+                None,
+                None,
+            )
+            .await?;
+
+        match resp {
+            Response::Ok(OkResponse::Default) => Ok(()),
+            Response::Err(err) => anyhow::bail!("user_set_abstraction: {err}"),
+            _ => anyhow::bail!("user_set_abstraction: unexpected response type: {resp:?}"),
         }
     }
 
@@ -1895,7 +2059,8 @@ impl Client {
             let res = http_client.post(url).json(&req).send().await?;
 
             let status = res.status();
-            let text = res.text().await?;
+            let bytes = res.bytes().await?;
+            let text = String::from_utf8_lossy(&bytes);
 
             if !status.is_success() {
                 return Err(anyhow!("HTTP {status} body={text}"));
@@ -1947,7 +2112,8 @@ impl Client {
             .await?;
 
         let status = res.status();
-        let text = res.text().await?;
+        let bytes = res.bytes().await?;
+        let text = String::from_utf8_lossy(&bytes);
 
         if !status.is_success() {
             return Err(anyhow!("HTTP {status} body={text}"));

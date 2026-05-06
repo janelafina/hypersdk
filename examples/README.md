@@ -20,7 +20,7 @@ PRIVATE_KEY=your_private_key_here
 
 ```bash
 # HyperCore examples
-cargo run --example list_markets
+cargo run --example list-markets
 cargo run --example send_order
 cargo run --example websocket-user-events -- --user 0xYourAddress
 
@@ -46,8 +46,12 @@ Start here if you're new to the SDK. These examples show read-only operations.
 | `list-hip3` | Query HIP-3 DEXes and their perpetual markets | No |
 | `websocket` | Subscribe to real-time trades, order books, and user events | No (read-only) |
 | `websocket-user-events` | Subscribe to userEvents, TWAP streams, activeAssetData, and webData2 | No (read-only, requires user address) |
+| `websocket-candles` | Subscribe to real-time candlestick (OHLCV) data for a market | No (read-only) |
+| `vault_details` | Query vault details and performance metrics | No |
+| `user_vault_equities` | Query a user's vault deposits | No |
+| `user_role` | Query an address role (User, Vault, Agent, SubAccount) | No |
 
-**Try first:** `cargo run --example list_markets`
+**Try first:** `cargo run --example list-markets`
 
 ### Intermediate - Trading & Transfers
 
@@ -61,6 +65,9 @@ These examples require a private key and perform state-changing operations.
 | `transfer_from_evm` | Transfer assets from HyperEVM to HyperCore | Yes |
 | `transfer_to_perps` | Move assets from spot to perpetual balance | Yes |
 | `transfer_to_spot` | Move assets from perpetual to spot balance | Yes |
+| `vault_transfer` | Deposit or withdraw USDC from a vault | Yes |
+| `subaccounts` | List subaccounts under a master account | No |
+| `approve-agent` | Approve an API agent for your account | Yes |
 
 **Try next:** `cargo run --example send_order` (after funding your testnet account)
 
@@ -73,7 +80,9 @@ These examples demonstrate advanced patterns for production systems.
 | `multisig_order` | Place orders with multiple signers (vault/custody pattern) | Yes (multiple) |
 | `multisig_send_usd` | Multi-sig USDC transfer | Yes (multiple) |
 | `multisig_send_asset` | Multi-sig asset transfer between DEXes | Yes (multiple) |
+| `multisig-approve-agent` | Approve an API agent for a multisig account | Yes (multiple) |
 | `buy_and_transfer` | Complex flow: place order, wait for fill, transfer to EVM | Yes |
+| `priority-fee-bid` | Bid on gossip priority Dutch auction for faster order execution | Yes |
 
 **Production pattern:** See `multisig_order` for how institutional systems manage custody
 

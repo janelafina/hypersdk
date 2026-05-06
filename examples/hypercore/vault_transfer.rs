@@ -53,11 +53,15 @@ async fn main() -> anyhow::Result<()> {
 
     match args.operation.as_str() {
         "deposit" => {
-            client.vault_transfer(&signer, args.vault, args.amount, nonce, true).await?;
+            client
+                .vault_transfer(&signer, args.vault, args.amount, nonce, true)
+                .await?;
             println!("Deposited ${} into vault {}", args.amount, args.vault);
         }
         "withdraw" => {
-            client.vault_transfer(&signer, args.vault, args.amount, nonce, false).await?;
+            client
+                .vault_transfer(&signer, args.vault, args.amount, nonce, false)
+                .await?;
             println!("Withdrew ${} from vault {}", args.amount, args.vault);
         }
         op => anyhow::bail!("unknown operation '{op}', use 'deposit' or 'withdraw'"),

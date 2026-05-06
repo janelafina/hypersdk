@@ -1,3 +1,8 @@
+//! List all spot tokens available on the network.
+//!
+//! Fetches the full token list via `spot_tokens()` and prints each token's name, index,
+//! decimal precision, cross-chain address, and EVM contract address.
+
 use hypersdk::hypercore;
 
 #[tokio::main]

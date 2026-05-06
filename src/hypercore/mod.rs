@@ -94,7 +94,6 @@ mod utils;
 pub mod ws;
 
 use std::{
-    fmt,
     hash::Hash,
     sync::atomic::{self, AtomicU64},
 };
@@ -197,6 +196,108 @@ pub use ws::Connection as WebSocket;
 /// ```
 pub struct NonceHandler {
     nonce: AtomicU64,
+}
+
+/// An outcome order book — one tradable side of an outcome.
+///
+/// Each [`OutcomeInfo`] produces N order books (one per [`OutcomeSideSpec`]).
+/// The market field stores the Hyperliquid asset index directly:
+/// `100_000_000 + outcome_id * 10 + side_index` where side_index is 0 for "Yes" and 1 otherwise.
+#[derive(Debug, Clone)]
+pub struct OutcomeMarket {
+    /// Outcome metadata
+    pub info: OutcomeInfo,
+    /// Side name (e.g., "Yes", "No")
+    pub side: String,
+    /// Hyperliquid asset index (usable directly in orders)
+    pub market: usize,
+}
+
+impl OutcomeMarket {
+    /// Exchange coin name used for WebSocket subscriptions (e.g., "#42").
+    ///
+    /// Strips the outcome namespace offset from the asset index to get the
+    /// raw encoding (`outcome * 10 + side_index`).
+    #[must_use]
+    pub fn coin(&self) -> String {
+        format!("#{}", self.market - 100_000_000)
+    }
+}
+
+impl PartialEq for OutcomeMarket {
+    fn eq(&self, other: &Self) -> bool {
+        self.market == other.market
+    }
+}
+
+impl Eq for OutcomeMarket {}
+
+/// Trait for any tradeable market on Hyperliquid.
+///
+/// Provides access to the properties needed for order placement:
+/// the asset index and price tick table.
+///
+/// Implemented for [`PerpMarket`], [`SpotMarket`], and [`OutcomeMarket`].
+pub trait Market: private::Sealed {
+    /// Asset index used in API order requests.
+    fn asset_index(&self) -> usize;
+
+    /// Price tick configuration for rounding prices to valid ticks.
+    fn tick_table(&self) -> PriceTick;
+}
+
+mod private {
+    /// Seals [`super::Market`] so only this crate can implement it.
+    pub trait Sealed {}
+
+    impl Sealed for super::PerpMarket {}
+    impl Sealed for super::SpotMarket {}
+    impl Sealed for super::OutcomeMarket {}
+
+    // Also seal references so `&PerpMarket`, `&SpotMarket`, etc. work with `impl Market`.
+    impl<T: Sealed> Sealed for &T {}
+}
+
+impl Market for PerpMarket {
+    fn asset_index(&self) -> usize {
+        self.index
+    }
+
+    fn tick_table(&self) -> PriceTick {
+        self.table
+    }
+}
+
+impl Market for SpotMarket {
+    fn asset_index(&self) -> usize {
+        self.index
+    }
+
+    fn tick_table(&self) -> PriceTick {
+        self.table
+    }
+}
+
+impl Market for OutcomeMarket {
+    fn asset_index(&self) -> usize {
+        self.market
+    }
+
+    fn tick_table(&self) -> PriceTick {
+        // Outcomes trade between 0 and 1; use a perp-style tick with no sz_decimals limit.
+        PriceTick::for_perp(0)
+    }
+}
+
+// Blanket impl so `&PerpMarket`, `&SpotMarket`, `&OutcomeMarket` also satisfy `impl Market`.
+impl<T: Market> Market for &T {
+    fn asset_index(&self) -> usize {
+        (*self).asset_index()
+    }
+
+    fn tick_table(&self) -> PriceTick {
+        (*self).tick_table()
+    }
 }
 
 impl Default for NonceHandler {
@@ -559,7 +660,7 @@ pub fn testnet_ws() -> WebSocket {
 /// ```
 ///
 /// See: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size>
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PriceTick {
     /// Maximum decimal places allowed for this market.
     /// - Spot: max_decimals = 8 - sz_decimals
@@ -748,6 +849,14 @@ pub struct PerpMarket {
     /// Price tick configuration for valid price increments
     pub table: PriceTick,
 }
+
+impl PartialEq for PerpMarket {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for PerpMarket {}
 
 impl PerpMarket {
     /// Returns the market symbol (same as name for perps).
@@ -966,7 +1075,7 @@ impl SpotMarket {
 
 impl PartialEq for SpotMarket {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
+        self.index == other.index
     }
 }
 
@@ -1055,7 +1164,7 @@ mod tick_tests {
 ///
 /// Tokens with `evm_contract` set can be transferred between HyperCore and HyperEVM:
 /// - Use `cross_chain_address` as the destination when transferring to EVM
-/// - Use the HTTP client's `transfer_to_evm` and `transfer_from_evm` methods
+/// - Use the HTTP client's [`HttpClient::transfer_to_evm`] method
 ///
 /// # Example
 ///
@@ -1074,7 +1183,8 @@ mod tick_tests {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::Display)]
+#[display("{name}")]
 pub struct SpotToken {
     /// Token name (e.g., "USDC", "BTC", "PURR")
     pub name: String,
@@ -1198,14 +1308,8 @@ impl PartialEq for SpotToken {
 
 impl Eq for SpotToken {}
 
-impl fmt::Display for SpotToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
-
 /// One side of an outcome market.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OutcomeSideSpec {
     /// Side name (e.g., "Yes", "No")
     pub name: String,
@@ -1246,6 +1350,107 @@ pub struct OutcomeQuestion {
 pub struct OutcomeMeta {
     pub outcomes: Vec<OutcomeInfo>,
     pub questions: Vec<OutcomeQuestion>,
+}
+
+impl PartialEq for OutcomeInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.outcome == other.outcome
+    }
+}
+
+impl Eq for OutcomeInfo {}
+
+impl Hash for OutcomeInfo {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.outcome.hash(state);
+    }
+}
+
+impl PartialEq for OutcomeQuestion {
+    fn eq(&self, other: &Self) -> bool {
+        self.question == other.question
+    }
+}
+
+impl Eq for OutcomeQuestion {}
+
+impl Hash for OutcomeQuestion {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.question.hash(state);
+    }
+}
+
+/// Parsed parameters for a recurring (automated) outcome event.
+///
+/// Recurring outcome descriptions follow the format:
+/// ```text
+/// class:priceBinary|underlying:BTC|expiry:20260428-0300|targetPrice:79133|period:1d
+/// ```
+///
+/// Use [`std::str::FromStr::from_str`] to parse an [`OutcomeInfo::description`].
+/// Non-recurring outcomes (free-text descriptions) will return `None`.
+#[derive(Debug, Clone)]
+pub struct RecurringEvent {
+    /// The event class (e.g., "priceBinary")
+    pub class: String,
+    /// The underlying asset symbol (e.g., "BTC", "HYPE")
+    pub underlying: String,
+    /// Expiry in ISO-ish format (e.g., "20260428-0300")
+    pub expiry: String,
+    /// Target price as a string (e.g., "79133", "32.98")
+    pub target_price: Decimal,
+    /// Recurrence period (e.g., "1d", "15m")
+    pub period: String,
+}
+
+impl PartialEq for RecurringEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.class == other.class
+            && self.underlying == other.underlying
+            && self.expiry == other.expiry
+            && self.target_price == other.target_price
+            && self.period == other.period
+    }
+}
+
+impl Eq for RecurringEvent {}
+
+impl Hash for RecurringEvent {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Decimal does not implement Hash, so we hash its normalized string
+        // representation. `normalized()` ensures trailing zeros are stripped
+        // so that equal decimals always produce the same hash.
+        self.class.hash(state);
+        self.underlying.hash(state);
+        self.expiry.hash(state);
+        self.target_price.normalize().to_string().hash(state);
+        self.period.hash(state);
+    }
+}
+
+impl std::str::FromStr for RecurringEvent {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut map = std::collections::HashMap::new();
+        for part in s.split('|') {
+            let (key, value) = part
+                .split_once(':')
+                .context("missing ':' in key:value pair")?;
+            map.insert(key.to_string(), value.to_string());
+        }
+        Ok(RecurringEvent {
+            class: map.remove("class").context("missing 'class'")?,
+            underlying: map.remove("underlying").context("missing 'underlying'")?,
+            expiry: map.remove("expiry").context("missing 'expiry'")?,
+            target_price: map
+                .remove("targetPrice")
+                .context("missing 'targetPrice'")?
+                .parse()
+                .context("invalid targetPrice")?,
+            period: map.remove("period").context("missing 'period'")?,
+        })
+    }
 }
 
 async fn raw_spot_markets(
@@ -1358,7 +1563,7 @@ pub async fn spot_markets(
 /// # async fn example() -> anyhow::Result<()> {
 /// let url = hypercore::mainnet_url();
 /// let client = reqwest::Client::new();
-/// let dexes = hypercore::perp_dexs(url, client).await?;
+/// let dexes = hypercore::perp_dexes(url, client).await?;
 ///
 /// for dex in dexes {
 ///     println!("DEX: {}", dex.name());
@@ -1366,7 +1571,7 @@ pub async fn spot_markets(
 /// # Ok(())
 /// # }
 /// ```
-pub async fn perp_dexs(
+pub async fn perp_dexes(
     core_url: impl IntoUrl,
     client: reqwest::Client,
 ) -> anyhow::Result<Vec<Dex>> {
@@ -1394,6 +1599,15 @@ pub async fn perp_dexs(
         .collect();
 
     Ok(dex_list)
+}
+
+/// Misspelled alias of [`perp_dexes`].
+#[deprecated(since = "0.2.9", note = "use perp_dexes instead")]
+pub async fn perp_dexs(
+    core_url: impl IntoUrl,
+    client: reqwest::Client,
+) -> anyhow::Result<Vec<Dex>> {
+    perp_dexes(core_url, client).await
 }
 
 #[derive(Deserialize)]
@@ -1505,6 +1719,32 @@ pub async fn outcome_meta(
     })
 }
 
+/// Fetch all outcome markets, returning one [`OutcomeMarket`] per side.
+///
+/// The market index is calculated as `outcome * 10 + side_index` where
+/// "Yes" gets side index 0 and all other sides get 1.
+pub async fn outcomes(
+    core_url: impl IntoUrl,
+    client: reqwest::Client,
+) -> anyhow::Result<Vec<OutcomeMarket>> {
+    let meta = outcome_meta(core_url, client).await?;
+
+    let mut result = Vec::new();
+    for o in &meta.outcomes {
+        for side in &o.side_specs {
+            let is_yes = side.name == "Yes";
+            let market = 100_000_000 + (o.outcome as usize) * 10 + usize::from(!is_yes);
+            result.push(OutcomeMarket {
+                info: o.clone(),
+                side: side.name.clone(),
+                market,
+            });
+        }
+    }
+
+    Ok(result)
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawOutcomeMeta {
@@ -1593,10 +1833,15 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone, Deserialize)]
+/// Margin mode for a perpetual market.
+///
+/// Determines how margin is managed across positions.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MarginMode {
+    /// Strict isolated margin — position can only use its allocated margin.
     StrictIsolated,
+    /// No cross-margin — position uses isolated margin but with different risk parameters.
     NoCross,
 }
 
@@ -1922,7 +2167,12 @@ mod tests {
         assert!(!meta.outcomes.is_empty());
         // Each outcome should have exactly 2 sides
         for o in &meta.outcomes {
-            assert_eq!(o.side_specs.len(), 2, "outcome {} should have 2 sides", o.outcome);
+            assert_eq!(
+                o.side_specs.len(),
+                2,
+                "outcome {} should have 2 sides",
+                o.outcome
+            );
         }
     }
 

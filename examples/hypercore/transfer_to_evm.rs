@@ -1,3 +1,8 @@
+//! Transfer tokens from the exchange spot wallet to the EVM.
+//!
+//! Looks up a token by name and transfers the specified amount from the signer's spot
+//! balance on the exchange to their corresponding EVM wallet address.
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;

@@ -7,11 +7,9 @@
 //!
 //! The connection yields [`Event`] which wraps connection state and data messages:
 //!
-//! - [`Event::Connected`] - Connection established (including after reconnection)
-//! - [`Event::Disconnected`] - Connection lost (will auto-reconnect)
-//! - [`Event::Message`] - Contains an [`Incoming`] data message
-//!
-//! You can also check the current connection status using [`Connection::is_connected()`].
+//! - [`Event::Connected`] — Connection established (including after reconnection)
+//! - [`Event::Disconnected`] — Connection lost (will auto-reconnect)
+//! - [`Event::Message`] — Contains an [`Incoming`] data message
 //!
 //! # Examples
 //!
@@ -130,6 +128,7 @@ use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     time::{interval, sleep, timeout},
 };
+use tokio_util::sync::CancellationToken;
 use url::Url;
 use yawc::{Frame, OpCode, Options, TcpWebSocket};
 
@@ -212,6 +211,18 @@ impl futures::Stream for Stream {
 
 type SubChannelData = (bool, Subscription);
 
+/// Shared handle that keeps the WebSocket background task alive.
+///
+/// When all clones are dropped, the [`CancellationToken`] is cancelled and
+/// the background reconnect loop exits gracefully.
+#[derive(Clone)]
+struct ConnectionGuard {
+    /// Held solely to keep the token alive. When all guards drop, the token
+    /// is cancelled and the background task exits.
+    #[allow(dead_code)]
+    token: CancellationToken,
+}
+
 /// WebSocket event representing either a connection state change or a data message.
 ///
 /// This enum cleanly separates connection lifecycle events from actual data messages,
@@ -272,6 +283,13 @@ pub enum Event {
 /// - [`Event::Disconnected`] - Connection lost
 /// - [`Event::Message`] - Contains an [`Incoming`] data message
 ///
+/// # Graceful Shutdown
+///
+/// The background reconnect loop runs until all handles (`Connection`,
+/// [`ConnectionHandle`], and [`ConnectionStream`]) are dropped. Once the last
+/// handle is dropped, the background task exits cleanly. You can also call
+/// [`close`](Self::close) to explicitly shut down the connection.
+///
 /// # Example
 ///
 /// ```no_run
@@ -301,6 +319,7 @@ pub enum Event {
 pub struct Connection {
     rx: UnboundedReceiver<Event>,
     tx: UnboundedSender<SubChannelData>,
+    guard: ConnectionGuard,
 }
 
 /// A handle for managing subscriptions to a WebSocket connection.
@@ -312,6 +331,11 @@ pub struct Connection {
 ///
 /// The subscriptions managed by this handle persist across automatic
 /// reconnections.
+///
+/// # Graceful Shutdown
+///
+/// The background task will shut down when **all** handles and streams are
+/// dropped. To explicitly trigger shutdown, call [`close`](Self::close).
 ///
 /// # Example
 ///
@@ -350,9 +374,14 @@ pub struct Connection {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Clone, Debug)]
+#[allow(dead_code)]
+#[derive(Clone)]
 pub struct ConnectionHandle {
     tx: UnboundedSender<SubChannelData>,
+    /// Keeps the CancellationToken alive; dropping this handle may trigger
+    /// graceful shutdown of the background task if it was the last reference.
+    #[allow(dead_code)]
+    guard: ConnectionGuard,
 }
 
 /// A stream of events from a WebSocket connection.
@@ -363,6 +392,10 @@ pub struct ConnectionHandle {
 ///
 /// It implements `futures::Stream`, allowing you to easily process events
 /// using methods like `next().await` or `for_each()`.
+///
+/// # Graceful Shutdown
+///
+/// The background task will shut down when all handles and streams are dropped.
 ///
 /// # Example
 ///
@@ -387,9 +420,13 @@ pub struct ConnectionHandle {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug)]
+#[allow(dead_code)]
 pub struct ConnectionStream {
     rx: UnboundedReceiver<Event>,
+    /// Keeps the CancellationToken alive; dropping this stream may trigger
+    /// graceful shutdown of the background task if it was the last reference.
+    #[allow(dead_code)]
+    guard: ConnectionGuard,
 }
 
 impl Connection {
@@ -400,6 +437,9 @@ impl Connection {
     /// ([`Event::Connected`], [`Event::Disconnected`]) will be emitted through
     /// the stream.
     ///
+    /// The background task will exit gracefully when this `Connection` (or any
+    /// handles derived from it via [`split`](Self::split)) is dropped.
+    ///
     /// # Example
     ///
     /// Create a new WebSocket connection:
@@ -407,8 +447,13 @@ impl Connection {
     pub fn new(url: Url) -> Self {
         let (tx, rx) = unbounded_channel();
         let (stx, srx) = unbounded_channel();
-        tokio::spawn(connection(url, tx, srx));
-        Self { rx, tx: stx }
+        let token = CancellationToken::new();
+        tokio::spawn(connection(url, tx, srx, token.clone()));
+        Self {
+            rx,
+            tx: stx,
+            guard: ConnectionGuard { token },
+        }
     }
 
     /// Subscribes to a WebSocket channel.
@@ -438,10 +483,10 @@ impl Connection {
         let _ = self.tx.send((false, subscription));
     }
 
-    /// Closes the WebSocket connection.
+    /// Closes the WebSocket connection and shuts down the background task.
     ///
     /// After calling this, the connection will no longer receive messages
-    /// and cannot be reused.
+    /// and cannot be reused. The background reconnect loop will terminate.
     ///
     /// # Example
     ///
@@ -453,11 +498,19 @@ impl Connection {
     /// Splits the connection into a subscription handle and an event stream.
     ///
     /// This is useful when you want to drive the stream in one task and
-    /// manage subscriptions from another.
+    /// manage subscriptions from another. Both returned halves participate
+    /// in graceful shutdown — the background task exits when all handles
+    /// and streams are dropped.
     pub fn split(self) -> (ConnectionHandle, ConnectionStream) {
         (
-            ConnectionHandle { tx: self.tx },
-            ConnectionStream { rx: self.rx },
+            ConnectionHandle {
+                tx: self.tx,
+                guard: self.guard.clone(),
+            },
+            ConnectionStream {
+                rx: self.rx,
+                guard: self.guard,
+            },
         )
     }
 }
@@ -499,14 +552,15 @@ impl ConnectionHandle {
         let _ = self.tx.send((false, subscription));
     }
 
-    /// Closes the WebSocket connection.
+    /// Drops this handle, releasing its reference to the shared connection.
     ///
-    /// After calling this, the connection will no longer receive messages
-    /// and cannot be reused.
+    /// The background task will shut down when **all** handles and streams
+    /// are dropped. If other [`ConnectionHandle`] or [`ConnectionStream`]
+    /// instances still exist, the connection remains active.
     ///
     /// # Example
     ///
-    /// Close the connection when done: `ws.close()`
+    /// Close the connection when done: `drop(handle)`
     pub fn close(self) {
         drop(self);
     }
@@ -525,6 +579,7 @@ async fn connection(
     url: Url,
     tx: UnboundedSender<Event>,
     mut srx: UnboundedReceiver<SubChannelData>,
+    shutdown: CancellationToken,
 ) {
     const MAX_MISSED_PONGS: u8 = 2;
     const MAX_RECONNECT_DELAY_MS: u64 = 5_000; // 5 seconds max
@@ -534,31 +589,28 @@ async fn connection(
     let mut reconnect_attempts = 0u32;
 
     loop {
-        let mut stream = match timeout(Duration::from_secs(10), Stream::connect(url.clone())).await
-        {
-            Ok(ok) => match ok {
-                Ok(ok) => ok,
-                Err(err) => {
-                    log::error!("Unable to connect to {url}: {err:?}");
-
-                    // Exponential backoff: 500ms, 1s, 2s, 4s, 5s (capped)
-                    let delay_ms = (INITIAL_RECONNECT_DELAY_MS * (1u64 << reconnect_attempts))
-                        .min(MAX_RECONNECT_DELAY_MS);
-                    reconnect_attempts = reconnect_attempts.saturating_add(1);
-
-                    log::debug!(
-                        "Reconnecting in {}ms (attempt {})",
-                        delay_ms,
-                        reconnect_attempts
-                    );
-                    sleep(Duration::from_millis(delay_ms)).await;
-
-                    continue;
+        // Race the connect attempt (with timeout) against the shutdown signal.
+        let mut stream = match tokio::select! {
+            result = timeout(Duration::from_secs(10), Stream::connect(url.clone())) => {
+                match result {
+                    Ok(Ok(stream)) => Some(stream),
+                    Ok(Err(err)) => {
+                        log::error!("Unable to connect to {url}: {err:?}");
+                        None
+                    }
+                    Err(_) => {
+                        log::error!("Connection timeout to {url}");
+                        None
+                    }
                 }
-            },
-            Err(err) => {
-                log::error!("Connection timeout to {url}: {err:?}");
-
+            }
+            _ = shutdown.cancelled() => {
+                break;
+            }
+        } {
+            Some(stream) => stream,
+            None => {
+                // Exponential backoff: 500ms, 1s, 2s, 4s, 5s (capped)
                 let delay_ms = (INITIAL_RECONNECT_DELAY_MS * (1u64 << reconnect_attempts))
                     .min(MAX_RECONNECT_DELAY_MS);
                 reconnect_attempts = reconnect_attempts.saturating_add(1);
@@ -568,7 +620,14 @@ async fn connection(
                     delay_ms,
                     reconnect_attempts
                 );
-                sleep(Duration::from_millis(delay_ms)).await;
+
+                // Sleep but respect shutdown signal
+                if tokio::select! {
+                    _ = sleep(Duration::from_millis(delay_ms)) => false,
+                    _ = shutdown.cancelled() => true,
+                } {
+                    break;
+                }
 
                 continue;
             }
@@ -637,10 +696,17 @@ async fn connection(
                         }
                     }
                 }
+                _ = shutdown.cancelled() => {
+                    // Shutdown signal received — exit gracefully
+                    log::debug!("Shutdown signal received, closing WebSocket connection");
+                    break;
+                }
             }
         }
 
-        log::warn!("Disconnected from {url}, attempting to reconnect...");
+        log::info!("Disconnected from {url}, attempting to reconnect...");
         let _ = tx.send(Event::Disconnected);
     }
+
+    log::debug!("WebSocket background task shutting down");
 }

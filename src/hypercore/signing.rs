@@ -340,7 +340,9 @@ mod tests {
                 limit_px: dec!(50000),
                 sz: dec!(0.1),
                 reduce_only: false,
-                order_type: OrderTypePlacement::Limit { tif: TimeInForce::Ioc },
+                order_type: OrderTypePlacement::Limit {
+                    tif: TimeInForce::Ioc,
+                },
                 cloid: Default::default(),
             }],
             grouping: OrderGrouping::PriorityRate(80_000),

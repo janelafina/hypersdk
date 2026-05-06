@@ -31,6 +31,7 @@
 //! - [`UsdSend`]: Send USDC from perp balance
 //! - [`SpotSend`]: Send spot tokens
 //! - [`SendAsset`]: Send assets between accounts/DEXes
+//! - [`AgentSendAsset`]: Agent-signed self-transfer across DEXes/subaccounts
 //!
 //! ## API Response Types
 //! - [`OrderResponseStatus`]: Result of order submission
@@ -79,7 +80,7 @@ use alloy::{
     sol_types::eip712_domain,
 };
 use rust_decimal::Decimal;
-use serde::{de::Error, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error, ser::SerializeMap};
 use serde_with::{DisplayFromStr, serde_as};
 
 use crate::hypercore::{Chain, Cloid, OidOrCloid, SpotToken};
@@ -88,11 +89,13 @@ pub mod api;
 pub(super) mod solidity;
 
 // Re-export important raw types for convenience
+pub use api::AbstractionMode;
 pub use api::{
-    Action, ActionRequest, GossipPriorityBid, MultiSigAction, MultiSigPayload, OkResponse, Response,
+    Action, ActionRequest, GossipPriorityBid, MultiSigAction, MultiSigPayload, OkResponse,
+    Response, UserDexAbstractionAction, UserSetAbstractionAction,
 };
 // Import from raw module (which is now a submodule)
-use api::{SendAssetAction, SpotSendAction, UsdSendAction};
+use api::{AgentSendAssetAction, SendAssetAction, SpotSendAction, UsdSendAction};
 
 fn decimal_from_json_value(value: &serde_json::Value) -> Result<Decimal, String> {
     match value {
@@ -439,7 +442,9 @@ pub enum Incoming {
         user: Address,
         fills: Vec<Fill>,
     },
-    /// User events for a user (funding, liquidation, non-user-cancel)
+    /// User events for a user (fills, funding, liquidation, non-user-cancel).
+    /// Hyperliquid may send fill notifications on channel `"user"` instead of `"userEvents"`.
+    #[serde(alias = "user")]
     UserEvents(UserEvent),
     /// TWAP slice fill updates for a user
     UserTwapSliceFills(UserTwapSliceFills),
@@ -769,7 +774,7 @@ impl CandleInterval {
     /// - For `OneMonth`, this method assumes **30 days** by default.
     ///
     /// If you need a calendar-aware duration (e.g. 28/29/30/31 days),
-    /// use [`to_duration_with_month_days`] instead.
+    /// use [`Self::to_duration_with_month_days`] instead.
     pub fn to_duration(&self) -> Duration {
         self.to_duration_with_month_days(30)
     }
@@ -1007,6 +1012,112 @@ impl L2Book {
     }
 }
 
+/// Direction of a user fill.
+///
+/// These values are serialized and deserialized using Hyperliquid's wire strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display)]
+pub enum FillDirection {
+    /// Opening a long position.
+    #[serde(rename = "Open Long")]
+    #[display("Open Long")]
+    OpenLong,
+    /// Opening a short position.
+    #[serde(rename = "Open Short")]
+    #[display("Open Short")]
+    OpenShort,
+    /// Closing a long position.
+    #[serde(rename = "Close Long")]
+    #[display("Close Long")]
+    CloseLong,
+    /// Closing a short position.
+    #[serde(rename = "Close Short")]
+    #[display("Close Short")]
+    CloseShort,
+    /// Flipping from long to short.
+    #[serde(rename = "Long > Short")]
+    #[display("Long > Short")]
+    LongToShort,
+    /// Flipping from short to long.
+    #[serde(rename = "Short > Long")]
+    #[display("Short > Long")]
+    ShortToLong,
+    /// Cross-margin long liquidation.
+    #[serde(rename = "Liquidated Cross Long")]
+    #[display("Liquidated Cross Long")]
+    LiquidatedCrossLong,
+    /// Cross-margin short liquidation.
+    #[serde(rename = "Liquidated Cross Short")]
+    #[display("Liquidated Cross Short")]
+    LiquidatedCrossShort,
+    /// Isolated-margin long liquidation.
+    #[serde(rename = "Liquidated Isolated Long")]
+    #[display("Liquidated Isolated Long")]
+    LiquidatedIsolatedLong,
+    /// Isolated-margin short liquidation.
+    #[serde(rename = "Liquidated Isolated Short")]
+    #[display("Liquidated Isolated Short")]
+    LiquidatedIsolatedShort,
+    /// Auto-deleveraging event.
+    #[serde(rename = "Auto-Deleveraging")]
+    #[display("Auto-Deleveraging")]
+    AutoDeleveraging,
+    /// Partial borrow liquidation.
+    #[serde(rename = "Partial Borrow Liquidation")]
+    #[display("Partial Borrow Liquidation")]
+    PartialBorrowLiquidation,
+    /// Backstop borrow liquidation.
+    #[serde(rename = "Backstop Borrow Liquidation")]
+    #[display("Backstop Borrow Liquidation")]
+    BackstopBorrowLiquidation,
+    /// Settlement.
+    #[serde(rename = "Settlement")]
+    #[display("Settlement")]
+    Settlement,
+    /// Net child vault position change.
+    #[serde(rename = "Net Child Vaults")]
+    #[display("Net Child Vaults")]
+    NetChildVaults,
+    /// Spot buy.
+    #[serde(rename = "Buy")]
+    #[display("Buy")]
+    Buy,
+    /// Spot sell.
+    #[serde(rename = "Sell")]
+    #[display("Sell")]
+    Sell,
+    /// Automatic spot dust conversion.
+    #[serde(rename = "Spot Dust Conversion")]
+    #[display("Spot Dust Conversion")]
+    SpotDustConversion,
+}
+
+impl FillDirection {
+    /// Returns the Hyperliquid wire string for this fill direction.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::OpenLong => "Open Long",
+            Self::OpenShort => "Open Short",
+            Self::CloseLong => "Close Long",
+            Self::CloseShort => "Close Short",
+            Self::LongToShort => "Long > Short",
+            Self::ShortToLong => "Short > Long",
+            Self::LiquidatedCrossLong => "Liquidated Cross Long",
+            Self::LiquidatedCrossShort => "Liquidated Cross Short",
+            Self::LiquidatedIsolatedLong => "Liquidated Isolated Long",
+            Self::LiquidatedIsolatedShort => "Liquidated Isolated Short",
+            Self::AutoDeleveraging => "Auto-Deleveraging",
+            Self::PartialBorrowLiquidation => "Partial Borrow Liquidation",
+            Self::BackstopBorrowLiquidation => "Backstop Borrow Liquidation",
+            Self::Settlement => "Settlement",
+            Self::NetChildVaults => "Net Child Vaults",
+            Self::Buy => "Buy",
+            Self::Sell => "Sell",
+            Self::SpotDustConversion => "Spot Dust Conversion",
+        }
+    }
+}
+
 /// WebSocket fill.
 ///
 /// Describes a filled order for a user. Contains execution details and position impact.
@@ -1019,7 +1130,7 @@ impl L2Book {
 /// - `side`: Order side (Bid = buy, Ask = sell)
 /// - `time`: Timestamp in milliseconds
 /// - `start_position`: Position size before this fill
-/// - `dir`: Direction ("Open Long", "Close Long", "Open Short", "Close Short")
+/// - `dir`: Fill direction
 /// - `closed_pnl`: Realized PnL from closing position (0 if opening)
 /// - `hash`: Transaction hash
 /// - `oid`: Order ID
@@ -1071,8 +1182,8 @@ pub struct Fill {
     pub time: u64,
     /// Position before fill
     pub start_position: Decimal,
-    /// Direction (Open/Close Long/Short)
-    pub dir: String,
+    /// Fill direction
+    pub dir: FillDirection,
     /// Realized PnL from closing
     pub closed_pnl: Decimal,
     /// Transaction hash
@@ -1326,16 +1437,27 @@ pub struct UserTwapHistory {
 #[serde_as]
 #[serde(rename_all = "camelCase")]
 pub struct BasicOrder {
+    /// Unix timestamp (ms) when the order was placed.
     pub timestamp: u64,
+    /// Coin/market symbol (e.g., "BTC").
     pub coin: String,
+    /// Buy or sell side.
     pub side: Side,
+    /// Limit price.
     pub limit_px: Decimal,
+    /// Remaining size to fill.
     pub sz: Decimal,
+    /// Exchange-assigned order ID.
     pub oid: u64,
+    /// Original size at placement.
     pub orig_sz: Decimal,
+    /// Client-assigned order ID (if set).
     pub cloid: Option<B128>,
+    /// Order type (limit, market, etc.).
     pub order_type: OrderType,
+    /// Time-in-force (GTC, IOC, ALO).
     pub tif: Option<TimeInForce>,
+    /// Whether this order should only reduce an existing position.
     pub reduce_only: bool,
 }
 
@@ -1349,13 +1471,21 @@ pub struct BasicOrder {
 #[serde_as]
 #[serde(rename_all = "camelCase")]
 pub struct WsBasicOrder {
+    /// Unix timestamp (ms) when the order was placed.
     pub timestamp: u64,
+    /// Coin/market symbol (e.g., "BTC").
     pub coin: String,
+    /// Buy or sell side.
     pub side: Side,
+    /// Limit price.
     pub limit_px: Decimal,
+    /// Remaining size to fill.
     pub sz: Decimal,
+    /// Exchange-assigned order ID.
     pub oid: u64,
+    /// Original size at placement.
     pub orig_sz: Decimal,
+    /// Client-assigned order ID (if set).
     pub cloid: Option<B128>,
 }
 
@@ -1669,8 +1799,11 @@ impl OrderStatus {
 /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#core-usdc-transfer>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsdSend {
+    /// Destination address.
     pub destination: Address,
+    /// Amount of USDC to send.
     pub amount: Decimal,
+    /// Unix timestamp (ms); doubles as the action nonce.
     pub time: u64,
 }
 
@@ -1756,6 +1889,10 @@ impl SpotSend {
     }
 }
 
+/// Asset target for transfers.
+///
+/// Specifies whether a transfer destination is a perpetual (perp) balance,
+/// a spot balance, or a HIP-3 DEX identified by name.
 #[derive(Debug, Clone, derive_more::Display)]
 pub enum AssetTarget {
     #[display("")]
@@ -1790,13 +1927,13 @@ impl std::str::FromStr for AssetTarget {
 pub struct SendAsset {
     /// The destination address.
     pub destination: Address,
-    /// Source DEX, for
+    /// Source DEX or balance context (e.g., [`AssetTarget::Perp`], [`AssetTarget::Spot`]).
     #[serde_as(as = "DisplayFromStr")]
     pub source_dex: AssetTarget,
-    /// Destiation DEX, can be empty
+    /// Destination DEX or balance context (e.g., [`AssetTarget::Perp`], [`AssetTarget::Spot`]).
     #[serde_as(as = "DisplayFromStr")]
     pub destination_dex: AssetTarget,
-    /// Token
+    /// Token to send.
     pub token: SendToken,
     /// The amount.
     pub amount: Decimal,
@@ -1834,6 +1971,51 @@ impl SendAsset {
         SendAssetAction {
             signature_chain_id: chain.arbitrum_id().to_owned(),
             hyperliquid_chain: chain,
+            destination: self.destination,
+            source_dex: self.source_dex.to_string(),
+            destination_dex: self.destination_dex.to_string(),
+            token: self.token.to_string(),
+            amount: self.amount,
+            from_sub_account: self.from_sub_account,
+            nonce: self.nonce,
+        }
+    }
+}
+
+/// Agent-signed variant of [`SendAsset`] (inner data).
+///
+/// Similar to [`SendAsset`] but signed by an agent (API wallet) using L1-action
+/// signing. The destination is fixed to the source address, so this is
+/// restricted to self-transfers across DEXes, the spot balance, or between
+/// subaccounts owned by the same master account.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#agent-send-asset>
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSendAsset {
+    /// The destination address (must equal the signer's source address).
+    pub destination: Address,
+    /// Source DEX.
+    #[serde_as(as = "DisplayFromStr")]
+    pub source_dex: AssetTarget,
+    /// Destination DEX.
+    #[serde_as(as = "DisplayFromStr")]
+    pub destination_dex: AssetTarget,
+    /// Token.
+    pub token: SendToken,
+    /// Amount to send.
+    pub amount: Decimal,
+    /// Source subaccount address, or empty string if sending from the main account.
+    pub from_sub_account: String,
+    /// Request nonce (timestamp in ms); must match the outer request nonce.
+    pub nonce: u64,
+}
+
+impl AgentSendAsset {
+    /// Converts this into a signable [`AgentSendAssetAction`].
+    #[must_use]
+    pub fn into_action(self) -> AgentSendAssetAction {
+        AgentSendAssetAction {
             destination: self.destination,
             source_dex: self.source_dex.to_string(),
             destination_dex: self.destination_dex.to_string(),
@@ -2628,8 +2810,9 @@ pub struct SpotAssetContext {
 pub struct UserBalance {
     /// Token symbol
     pub coin: String,
-    /// Token index
-    pub token: usize,
+    /// Token index (absent for outcome market balances)
+    #[serde(default)]
+    pub token: Option<usize>,
     /// Amount held (locked)
     pub hold: Decimal,
     /// Total balance
@@ -2696,15 +2879,9 @@ impl UserBalance {
 /// Abstraction over a token to be sent out.
 ///
 /// This is to prevent users from f*cking it up.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::Display)]
+#[display("{}", _0.name)]
 pub struct SendToken(pub SpotToken);
-
-impl fmt::Display for SendToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // write!(f, "{}:{:x}", self.0.name, self.0.token_id)
-        write!(f, "{}", self.0.name)
-    }
-}
 
 /// Multi-signature wallet configuration.
 ///
@@ -2899,7 +3076,7 @@ pub struct VaultDetails {
 /// ```
 ///
 /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GossipPrioritySlot {
     /// Unix timestamp (seconds) when this auction cycle started.
@@ -2929,7 +3106,7 @@ pub struct GossipPrioritySlot {
 /// The first inner array contains the **previous cycle's** winning signer addresses
 /// (or `null`) for slots 0–4. The second inner array contains the current Dutch
 /// auction parameters for each slot.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(from = "RawGossipPriorityAuctionStatus")]
 pub struct GossipPriorityAuctionStatus {
     /// Previous-cycle winners' signer addresses (index = slot id), or `None` if
@@ -3333,6 +3510,10 @@ pub(super) enum InfoRequest {
     OutcomeMeta,
     /// Query gossip priority auction status.
     GossipPriorityAuctionStatus,
+    /// Query account abstraction mode for a user.
+    AbstractionMode {
+        user: Address,
+    },
 }
 
 #[cfg(test)]
@@ -3565,7 +3746,7 @@ mod tests {
                 assert_eq!(candle.open.to_string(), "1850.5");
                 assert_eq!(candle.close.to_string(), "1852.3");
             }
-            _ => panic!("Expected Incoming::Candle"),
+            _ => assert!(false, "Expected Incoming::Candle"),
         }
     }
 
@@ -3592,7 +3773,7 @@ mod tests {
                 assert_eq!(funding.szi.to_string(), "0.5");
                 assert_eq!(funding.funding_rate.to_string(), "0.0001");
             }
-            _ => panic!("Expected Incoming::UserEvents::Funding"),
+            _ => assert!(false, "Expected Incoming::UserEvents::Funding"),
         }
     }
 
@@ -3614,7 +3795,7 @@ mod tests {
                 assert_eq!(non_user_cancel[0].coin, "BTC");
                 assert_eq!(non_user_cancel[0].oid, 77738308);
             }
-            _ => panic!("Expected Incoming::UserEvents::NonUserCancel"),
+            _ => assert!(false, "Expected Incoming::UserEvents::NonUserCancel"),
         }
     }
 
@@ -3630,7 +3811,7 @@ mod tests {
             Incoming::UserEvents(UserEvent::Unknown(raw)) => {
                 assert_eq!(raw["mystery"]["field"], 1);
             }
-            _ => panic!("Expected Incoming::UserEvents::Unknown"),
+            _ => assert!(false, "Expected Incoming::UserEvents::Unknown"),
         }
     }
 
@@ -3662,7 +3843,7 @@ mod tests {
                     Some((Decimal::new(3, 0), Decimal::new(45, 1)))
                 );
             }
-            _ => panic!("Expected Incoming::ActiveAssetData"),
+            _ => assert!(false, "Expected Incoming::ActiveAssetData"),
         }
     }
 
@@ -3705,8 +3886,64 @@ mod tests {
                 assert_eq!(payload.twap_slice_fills[0].twap_id, 42);
                 assert_eq!(payload.twap_slice_fills[0].fill.coin, "BTC");
                 assert_eq!(payload.twap_slice_fills[0].fill.px.to_string(), "95000.0");
+                assert_eq!(
+                    payload.twap_slice_fills[0].fill.dir,
+                    FillDirection::OpenLong
+                );
             }
-            _ => panic!("Expected Incoming::UserTwapSliceFills"),
+            _ => assert!(false, "Expected Incoming::UserTwapSliceFills"),
+        }
+    }
+
+    #[test]
+    fn fill_direction_serde_values() {
+        let cases = [
+            (FillDirection::OpenLong, "Open Long"),
+            (FillDirection::OpenShort, "Open Short"),
+            (FillDirection::CloseLong, "Close Long"),
+            (FillDirection::CloseShort, "Close Short"),
+            (FillDirection::LongToShort, "Long > Short"),
+            (FillDirection::ShortToLong, "Short > Long"),
+            (FillDirection::LiquidatedCrossLong, "Liquidated Cross Long"),
+            (
+                FillDirection::LiquidatedCrossShort,
+                "Liquidated Cross Short",
+            ),
+            (
+                FillDirection::LiquidatedIsolatedLong,
+                "Liquidated Isolated Long",
+            ),
+            (
+                FillDirection::LiquidatedIsolatedShort,
+                "Liquidated Isolated Short",
+            ),
+            (FillDirection::AutoDeleveraging, "Auto-Deleveraging"),
+            (
+                FillDirection::PartialBorrowLiquidation,
+                "Partial Borrow Liquidation",
+            ),
+            (
+                FillDirection::BackstopBorrowLiquidation,
+                "Backstop Borrow Liquidation",
+            ),
+            (FillDirection::Settlement, "Settlement"),
+            (FillDirection::NetChildVaults, "Net Child Vaults"),
+            (FillDirection::Buy, "Buy"),
+            (FillDirection::Sell, "Sell"),
+            (FillDirection::SpotDustConversion, "Spot Dust Conversion"),
+        ];
+
+        for (direction, wire) in cases {
+            assert_eq!(direction.as_str(), wire);
+            assert_eq!(direction.to_string(), wire);
+            assert_eq!(
+                serde_json::to_string(&direction).unwrap(),
+                format!("{wire:?}")
+            );
+            assert_eq!(
+                serde_json::from_str::<FillDirection>(&format!("{wire:?}")).unwrap(),
+                direction
+            );
         }
     }
 
@@ -3753,7 +3990,7 @@ mod tests {
                 assert_eq!(item.status.description.as_deref(), Some("completed"));
                 assert!(matches!(item.status.status, TwapStatus::Finished));
             }
-            _ => panic!("Expected Incoming::UserTwapHistory"),
+            _ => assert!(false, "Expected Incoming::UserTwapHistory"),
         }
     }
 
@@ -3796,7 +4033,7 @@ mod tests {
                 assert!(matches!(item.status.status, TwapStatus::Activated));
                 assert_eq!(item.status.description, None);
             }
-            _ => panic!("Expected Incoming::UserTwapHistory"),
+            _ => assert!(false, "Expected Incoming::UserTwapHistory"),
         }
     }
 
@@ -3816,7 +4053,7 @@ mod tests {
                 assert_eq!(payload["clearinghouseState"]["time"], 1710002000000u64);
                 assert_eq!(payload["openOrders"][0]["oid"], 1234u64);
             }
-            _ => panic!("Expected Incoming::WebData2"),
+            _ => assert!(false, "Expected Incoming::WebData2"),
         }
     }
 
@@ -4130,5 +4367,53 @@ mod tests {
             parsed.grouping,
             OrderGrouping::PriorityRate(80_000)
         ));
+    }
+
+    #[test]
+    fn test_incoming_user_channel_fills() {
+        // Hyperliquid sends fill notifications on channel "user" (not "userEvents").
+        // The payload matches UserEvent::Fills — just a {"fills":[...]} object.
+        // This reproduces the real wire-format messages from production:
+        //   {"channel":"user","data":{"fills":[{"coin":"BTC",...}]}}
+        let json = r#"{
+            "channel": "user",
+            "data": {
+                "fills": [
+                    {
+                        "coin": "ETH",
+                        "px": "3500.50",
+                        "sz": "0.5",
+                        "side": "A",
+                        "time": 1700000000000,
+                        "startPosition": "1.0",
+                        "dir": "Close Short",
+                        "closedPnl": "125.50",
+                        "hash": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                        "oid": 1234567890,
+                        "crossed": false,
+                        "fee": "0.125",
+                        "tid": 9876543210,
+                        "feeToken": "USDC",
+                        "twapId": null
+                    }
+                ]
+            }
+        }"#;
+
+        let incoming: Incoming = serde_json::from_str(json).unwrap();
+        match incoming {
+            Incoming::UserEvents(UserEvent::Fills { fills }) => {
+                assert_eq!(fills.len(), 1);
+                assert_eq!(fills[0].coin, "ETH");
+                assert_eq!(fills[0].px.to_string(), "3500.50");
+                assert_eq!(fills[0].sz.to_string(), "0.5");
+            }
+            _ => {
+                assert!(
+                    false,
+                    "Expected Incoming::UserEvents(UserEvent::Fills {{ .. }}), got {incoming:?}"
+                )
+            }
+        }
     }
 }
