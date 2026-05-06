@@ -1012,6 +1012,112 @@ impl L2Book {
     }
 }
 
+/// Direction of a user fill.
+///
+/// These values are serialized and deserialized using Hyperliquid's wire strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display)]
+pub enum FillDirection {
+    /// Opening a long position.
+    #[serde(rename = "Open Long")]
+    #[display("Open Long")]
+    OpenLong,
+    /// Opening a short position.
+    #[serde(rename = "Open Short")]
+    #[display("Open Short")]
+    OpenShort,
+    /// Closing a long position.
+    #[serde(rename = "Close Long")]
+    #[display("Close Long")]
+    CloseLong,
+    /// Closing a short position.
+    #[serde(rename = "Close Short")]
+    #[display("Close Short")]
+    CloseShort,
+    /// Flipping from long to short.
+    #[serde(rename = "Long > Short")]
+    #[display("Long > Short")]
+    LongToShort,
+    /// Flipping from short to long.
+    #[serde(rename = "Short > Long")]
+    #[display("Short > Long")]
+    ShortToLong,
+    /// Cross-margin long liquidation.
+    #[serde(rename = "Liquidated Cross Long")]
+    #[display("Liquidated Cross Long")]
+    LiquidatedCrossLong,
+    /// Cross-margin short liquidation.
+    #[serde(rename = "Liquidated Cross Short")]
+    #[display("Liquidated Cross Short")]
+    LiquidatedCrossShort,
+    /// Isolated-margin long liquidation.
+    #[serde(rename = "Liquidated Isolated Long")]
+    #[display("Liquidated Isolated Long")]
+    LiquidatedIsolatedLong,
+    /// Isolated-margin short liquidation.
+    #[serde(rename = "Liquidated Isolated Short")]
+    #[display("Liquidated Isolated Short")]
+    LiquidatedIsolatedShort,
+    /// Auto-deleveraging event.
+    #[serde(rename = "Auto-Deleveraging")]
+    #[display("Auto-Deleveraging")]
+    AutoDeleveraging,
+    /// Partial borrow liquidation.
+    #[serde(rename = "Partial Borrow Liquidation")]
+    #[display("Partial Borrow Liquidation")]
+    PartialBorrowLiquidation,
+    /// Backstop borrow liquidation.
+    #[serde(rename = "Backstop Borrow Liquidation")]
+    #[display("Backstop Borrow Liquidation")]
+    BackstopBorrowLiquidation,
+    /// Settlement.
+    #[serde(rename = "Settlement")]
+    #[display("Settlement")]
+    Settlement,
+    /// Net child vault position change.
+    #[serde(rename = "Net Child Vaults")]
+    #[display("Net Child Vaults")]
+    NetChildVaults,
+    /// Spot buy.
+    #[serde(rename = "Buy")]
+    #[display("Buy")]
+    Buy,
+    /// Spot sell.
+    #[serde(rename = "Sell")]
+    #[display("Sell")]
+    Sell,
+    /// Automatic spot dust conversion.
+    #[serde(rename = "Spot Dust Conversion")]
+    #[display("Spot Dust Conversion")]
+    SpotDustConversion,
+}
+
+impl FillDirection {
+    /// Returns the Hyperliquid wire string for this fill direction.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::OpenLong => "Open Long",
+            Self::OpenShort => "Open Short",
+            Self::CloseLong => "Close Long",
+            Self::CloseShort => "Close Short",
+            Self::LongToShort => "Long > Short",
+            Self::ShortToLong => "Short > Long",
+            Self::LiquidatedCrossLong => "Liquidated Cross Long",
+            Self::LiquidatedCrossShort => "Liquidated Cross Short",
+            Self::LiquidatedIsolatedLong => "Liquidated Isolated Long",
+            Self::LiquidatedIsolatedShort => "Liquidated Isolated Short",
+            Self::AutoDeleveraging => "Auto-Deleveraging",
+            Self::PartialBorrowLiquidation => "Partial Borrow Liquidation",
+            Self::BackstopBorrowLiquidation => "Backstop Borrow Liquidation",
+            Self::Settlement => "Settlement",
+            Self::NetChildVaults => "Net Child Vaults",
+            Self::Buy => "Buy",
+            Self::Sell => "Sell",
+            Self::SpotDustConversion => "Spot Dust Conversion",
+        }
+    }
+}
+
 /// WebSocket fill.
 ///
 /// Describes a filled order for a user. Contains execution details and position impact.
@@ -1024,7 +1130,7 @@ impl L2Book {
 /// - `side`: Order side (Bid = buy, Ask = sell)
 /// - `time`: Timestamp in milliseconds
 /// - `start_position`: Position size before this fill
-/// - `dir`: Direction ("Open Long", "Close Long", "Open Short", "Close Short")
+/// - `dir`: Fill direction
 /// - `closed_pnl`: Realized PnL from closing position (0 if opening)
 /// - `hash`: Transaction hash
 /// - `oid`: Order ID
@@ -1076,8 +1182,8 @@ pub struct Fill {
     pub time: u64,
     /// Position before fill
     pub start_position: Decimal,
-    /// Direction (Open/Close Long/Short)
-    pub dir: String,
+    /// Fill direction
+    pub dir: FillDirection,
     /// Realized PnL from closing
     pub closed_pnl: Decimal,
     /// Transaction hash
@@ -3780,8 +3886,64 @@ mod tests {
                 assert_eq!(payload.twap_slice_fills[0].twap_id, 42);
                 assert_eq!(payload.twap_slice_fills[0].fill.coin, "BTC");
                 assert_eq!(payload.twap_slice_fills[0].fill.px.to_string(), "95000.0");
+                assert_eq!(
+                    payload.twap_slice_fills[0].fill.dir,
+                    FillDirection::OpenLong
+                );
             }
             _ => assert!(false, "Expected Incoming::UserTwapSliceFills"),
+        }
+    }
+
+    #[test]
+    fn fill_direction_serde_values() {
+        let cases = [
+            (FillDirection::OpenLong, "Open Long"),
+            (FillDirection::OpenShort, "Open Short"),
+            (FillDirection::CloseLong, "Close Long"),
+            (FillDirection::CloseShort, "Close Short"),
+            (FillDirection::LongToShort, "Long > Short"),
+            (FillDirection::ShortToLong, "Short > Long"),
+            (FillDirection::LiquidatedCrossLong, "Liquidated Cross Long"),
+            (
+                FillDirection::LiquidatedCrossShort,
+                "Liquidated Cross Short",
+            ),
+            (
+                FillDirection::LiquidatedIsolatedLong,
+                "Liquidated Isolated Long",
+            ),
+            (
+                FillDirection::LiquidatedIsolatedShort,
+                "Liquidated Isolated Short",
+            ),
+            (FillDirection::AutoDeleveraging, "Auto-Deleveraging"),
+            (
+                FillDirection::PartialBorrowLiquidation,
+                "Partial Borrow Liquidation",
+            ),
+            (
+                FillDirection::BackstopBorrowLiquidation,
+                "Backstop Borrow Liquidation",
+            ),
+            (FillDirection::Settlement, "Settlement"),
+            (FillDirection::NetChildVaults, "Net Child Vaults"),
+            (FillDirection::Buy, "Buy"),
+            (FillDirection::Sell, "Sell"),
+            (FillDirection::SpotDustConversion, "Spot Dust Conversion"),
+        ];
+
+        for (direction, wire) in cases {
+            assert_eq!(direction.as_str(), wire);
+            assert_eq!(direction.to_string(), wire);
+            assert_eq!(
+                serde_json::to_string(&direction).unwrap(),
+                format!("{wire:?}")
+            );
+            assert_eq!(
+                serde_json::from_str::<FillDirection>(&format!("{wire:?}")).unwrap(),
+                direction
+            );
         }
     }
 

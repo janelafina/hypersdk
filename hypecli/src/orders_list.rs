@@ -353,7 +353,7 @@ impl FillsCmd {
                 fee: f.fee,
                 realized_pnl: f.closed_pnl,
                 start_position: f.start_position,
-                direction: f.dir.clone(),
+                direction: f.dir.to_string(),
                 crossed: f.crossed,
                 oid: f.oid,
                 time_ms: f.time,
