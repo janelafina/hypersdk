@@ -44,8 +44,9 @@ pub use grpc::{
     Event as FillsEvent, FillsConnection, FillsConnectionStream, StartPosition as FillsStartPosition,
 };
 pub use http::{
-    Client as InfoClient, DwellirInfoRequest, DwellirOpenOrder, DwellirPosition,
-    DwellirPositionData, INFO_BASE_URL,
+    ALL_DEXES, Client as InfoClient, DwellirInfoRequest, DwellirOpenOrder,
+    DwellirPortfolioClearinghouseState, DwellirPortfolioState, DwellirPosition,
+    DwellirPositionData, DwellirSpotState, INFO_BASE_URL,
 };
 pub use types::*;
 pub use ws::{
