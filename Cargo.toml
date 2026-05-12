@@ -183,6 +183,10 @@ path = "examples/hypercore/dwellir_l4_smoke.rs"
 name = "dwellir_fills_smoke"
 path = "examples/hypercore/dwellir_fills_smoke.rs"
 
+[[example]]
+name = "dwellir_info_open_orders"
+path = "examples/hypercore/dwellir_info_open_orders.rs"
+
 ## Documentation (docs.rs) configuration
 [package.metadata.docs.rs]
 all-features = true
