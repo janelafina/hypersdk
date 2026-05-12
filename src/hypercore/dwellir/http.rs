@@ -1,9 +1,9 @@
 //! HTTP JSON client for Dwellir's HyperCore Info Endpoint.
 //!
-//! Dwellir's info endpoint mirrors Hyperliquid info requests, but the API key
-//! is embedded in the URL path:
+//! Dwellir's info endpoint mirrors Hyperliquid info requests. For dedicated
+//! nodes, the API key is embedded in the URL path:
 //!
-//! `https://api-hyperliquid-mainnet-info.n.dwellir.com/{api_key}/info`
+//! `https://dedicated-hyperliquid-...n.dwellir.com/{api_key}/info`
 //!
 //! This module currently exposes the user-centric queries needed alongside the
 //! Dwellir streaming integrations: open orders, perpetual positions, and full
@@ -12,7 +12,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use alloy::primitives::Address;
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -124,6 +124,52 @@ pub enum DwellirInfoRequest {
     },
 }
 
+/// Returns the API key embedded in a Dwellir dedicated-node endpoint path.
+///
+/// Dwellir dedicated WebSocket URLs commonly look like
+/// `wss://dedicated-hyperliquid-...n.dwellir.com/{api_key}/ws`.
+#[must_use]
+pub fn api_key_from_endpoint_path(endpoint: &Url) -> Option<String> {
+    endpoint
+        .path_segments()?
+        .find(|segment| !segment.is_empty() && *segment != "ws")
+        .map(ToOwned::to_owned)
+}
+
+/// Normalizes a dedicated node host or endpoint into the HTTP info base URL.
+///
+/// Accepts either a bare host (`dedicated-hyperliquid-...n.dwellir.com`), an
+/// HTTP(S) URL, or a WS(S) URL. Path, query, and fragment components are
+/// removed because [`Client::info_url`] appends `/{api_key}/info`.
+pub fn dedicated_node_info_base_url(endpoint_or_host: impl AsRef<str>) -> Result<Url> {
+    let raw = endpoint_or_host.as_ref().trim();
+    let with_scheme = if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("https://{raw}")
+    };
+
+    let mut url = Url::parse(&with_scheme)
+        .with_context(|| format!("invalid Dwellir dedicated node endpoint: {raw}"))?;
+    let scheme = match url.scheme() {
+        "wss" => "https",
+        "ws" => "http",
+        "https" => "https",
+        "http" => "http",
+        other => {
+            return Err(anyhow!(
+                "unsupported Dwellir dedicated node scheme: {other}"
+            ));
+        }
+    };
+    url.set_scheme(scheme)
+        .map_err(|_| anyhow!("unable to set Dwellir dedicated node scheme to {scheme}"))?;
+    url.set_path("");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
 /// Async HTTP client for Dwellir's HyperCore Info Endpoint.
 ///
 /// # Example
@@ -132,12 +178,16 @@ pub enum DwellirInfoRequest {
 /// use hypersdk::{Address, hypercore::dwellir::InfoClient};
 ///
 /// # async fn example() -> anyhow::Result<()> {
-/// let client = InfoClient::new("your-dwellir-api-key");
+/// let client = InfoClient::for_dedicated_node(
+///     "your-dwellir-api-key",
+///     "dedicated-hyperliquid-tokyo-3.n.dwellir.com",
+/// )?;
 /// let user: Address = "0x0000000000000000000000000000000000000000".parse()?;
 ///
 /// let orders = client.open_orders(user).await?;
 /// let positions = client.positions(user).await?;
 /// let _portfolio = client.portfolio_state(user, None).await?;
+/// let _all_dexes = client.portfolio_state_all_dexes(user).await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -161,6 +211,26 @@ impl Client {
             base_url: Url::parse(INFO_BASE_URL).expect("valid Dwellir info base URL"),
             api_key: api_key.into(),
         }
+    }
+
+    /// Creates a client for a Dwellir dedicated node.
+    ///
+    /// `dedicated_node_host` can be a bare host, an HTTP(S) base URL, or the
+    /// same WS(S) endpoint used for the L4 stream.
+    pub fn for_dedicated_node(
+        api_key: impl Into<String>,
+        dedicated_node_host: impl AsRef<str>,
+    ) -> Result<Self> {
+        Ok(Self::new(api_key).with_base_url(dedicated_node_info_base_url(dedicated_node_host)?))
+    }
+
+    /// Creates a dedicated-node info client by deriving both host and API key
+    /// from a Dwellir WebSocket endpoint.
+    pub fn from_ws_endpoint(ws_endpoint: &Url) -> Result<Self> {
+        let api_key = api_key_from_endpoint_path(ws_endpoint).ok_or_else(|| {
+            anyhow!("Dwellir WebSocket endpoint path does not contain an API key")
+        })?;
+        Self::for_dedicated_node(api_key, ws_endpoint.as_str())
     }
 
     /// Sets a custom base URL while preserving the API-key path layout.
@@ -236,19 +306,21 @@ impl Client {
 
     /// Returns the full portfolio state for `user`.
     ///
-    /// If `dex` is `None`, this requests [`ALL_DEXES`] so the response includes
-    /// the native DEX plus every operational HIP-3 DEX. Pass a DEX name to query
-    /// only that DEX.
+    /// If `dex` is `None`, the field is omitted and Dwellir returns the native
+    /// Hyperliquid DEX. Pass a DEX name to query only that DEX, or pass
+    /// [`ALL_DEXES`] to include every operational HIP-3 DEX.
     pub async fn portfolio_state(
         &self,
         user: Address,
         dex: Option<String>,
     ) -> Result<DwellirPortfolioState> {
-        let req = DwellirInfoRequest::PortfolioState {
-            user,
-            dex: Some(dex.unwrap_or_else(|| ALL_DEXES.to_string())),
-        };
+        let req = DwellirInfoRequest::PortfolioState { user, dex };
         self.send_info_request("portfolio_state", &req).await
+    }
+
+    /// Returns the full portfolio state for the native DEX plus all operational HIP-3 DEXes.
+    pub async fn portfolio_state_all_dexes(&self, user: Address) -> Result<DwellirPortfolioState> {
+        self.portfolio_state(user, Some(ALL_DEXES.to_string())).await
     }
 
     /// Returns perpetual asset positions for `user`.
@@ -276,6 +348,29 @@ mod tests {
         assert_eq!(
             client.info_url().as_str(),
             "https://api-hyperliquid-mainnet-info.n.dwellir.com/secret-key/info"
+        );
+    }
+
+    #[test]
+    fn builds_dedicated_info_url_from_ws_endpoint() {
+        let ws_endpoint =
+            Url::parse("wss://dedicated-hyperliquid-tokyo-3.n.dwellir.com/secret-key/ws?x=1")
+                .unwrap();
+        let client = Client::from_ws_endpoint(&ws_endpoint).unwrap();
+        assert_eq!(
+            client.info_url().as_str(),
+            "https://dedicated-hyperliquid-tokyo-3.n.dwellir.com/secret-key/info"
+        );
+    }
+
+    #[test]
+    fn builds_dedicated_info_url_from_bare_host() {
+        let client =
+            Client::for_dedicated_node("secret-key", "dedicated-hyperliquid-tokyo-3.n.dwellir.com")
+                .unwrap();
+        assert_eq!(
+            client.info_url().as_str(),
+            "https://dedicated-hyperliquid-tokyo-3.n.dwellir.com/secret-key/info"
         );
     }
 
@@ -309,6 +404,18 @@ mod tests {
         assert_eq!(json["type"], "portfolioState");
         assert_eq!(json["user"], "0x000000000000000000000000000000000000dead");
         assert_eq!(json["dex"], ALL_DEXES);
+    }
+
+    #[test]
+    fn serializes_portfolio_state_without_dex_when_omitted() {
+        let req = DwellirInfoRequest::PortfolioState {
+            user: address!("0x000000000000000000000000000000000000dEaD"),
+            dex: None,
+        };
+        let json = serde_json::to_value(req).unwrap();
+        assert_eq!(json["type"], "portfolioState");
+        assert_eq!(json["user"], "0x000000000000000000000000000000000000dead");
+        assert!(json.get("dex").is_none());
     }
 
     #[test]
