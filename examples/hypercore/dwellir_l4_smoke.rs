@@ -82,6 +82,7 @@ async fn main() -> Result<()> {
                         return saw_snapshot;
                     }
                 }
+                L4Event::Message(DwellirIncoming::Trades(_)) => {}
             }
         }
         saw_snapshot

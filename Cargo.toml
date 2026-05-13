@@ -172,6 +172,10 @@ name = "dwellir_l4"
 path = "examples/hypercore/dwellir_l4.rs"
 
 [[example]]
+name = "dwellir_trades"
+path = "examples/hypercore/dwellir_trades.rs"
+
+[[example]]
 name = "dwellir_fills"
 path = "examples/hypercore/dwellir_fills.rs"
 

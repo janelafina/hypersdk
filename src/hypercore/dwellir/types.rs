@@ -1,12 +1,14 @@
-//! Types for Dwellir Hyperliquid streams (L4 book + fills).
+//! Types for Dwellir Hyperliquid streams (L4 book, trades, and fills).
+
+use std::fmt;
 
 use alloy::primitives::{Address, B128};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::hypercore::types::{Liquidation, Side};
+use crate::hypercore::types::{Liquidation, Side, Trade};
 
-/// Outgoing WebSocket messages for the Dwellir L4 feed.
+/// Outgoing WebSocket messages for the Dwellir WebSocket feed.
 ///
 /// Wire format matches Hyperliquid's native WebSocket subscribe/unsubscribe
 /// envelope (`{"method": "subscribe", "subscription": {...}}`), but the set
@@ -19,15 +21,33 @@ pub enum DwellirOutgoing {
 }
 
 /// Dwellir-specific subscription channels.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, derive_more::Display)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum DwellirSubscription {
     /// Full L4 order book with individual-order visibility.
-    #[display("l4Book({coin})")]
     L4Book { coin: String },
+    /// Real-time executions for a market, optionally filtered to a wallet.
+    Trades {
+        coin: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<Address>,
+    },
 }
 
-/// Incoming WebSocket messages from the Dwellir L4 feed.
+impl fmt::Display for DwellirSubscription {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::L4Book { coin } => write!(f, "l4Book({coin})"),
+            Self::Trades { coin, user: None } => write!(f, "trades({coin})"),
+            Self::Trades {
+                coin,
+                user: Some(user),
+            } => write!(f, "trades({coin},{user})"),
+        }
+    }
+}
+
+/// Incoming WebSocket messages from the Dwellir WebSocket feed.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "channel", content = "data", rename_all = "camelCase")]
 pub enum DwellirIncoming {
@@ -35,7 +55,12 @@ pub enum DwellirIncoming {
     SubscriptionResponse(DwellirOutgoing),
     /// L4 book message (either a full snapshot or an incremental update batch).
     L4Book(L4Message),
+    /// Real-time trades for a subscribed market.
+    Trades(Vec<DwellirTrade>),
 }
+
+/// Dwellir trade payload normalized to the SDK's native trade shape.
+pub type DwellirTrade = Trade;
 
 /// Either a full snapshot or an incremental update batch for the L4 book.
 #[derive(Debug, Clone, Deserialize)]
@@ -317,6 +342,90 @@ impl DwellirFill {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serializes_trades_subscription_without_user_filter() {
+        let raw = serde_json::to_value(DwellirOutgoing::Subscribe {
+            subscription: DwellirSubscription::Trades {
+                coin: "BTC".into(),
+                user: None,
+            },
+        })
+        .unwrap();
+
+        assert_eq!(
+            raw,
+            serde_json::json!({
+                "method": "subscribe",
+                "subscription": {
+                    "type": "trades",
+                    "coin": "BTC"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn serializes_trades_subscription_with_user_filter() {
+        let user: Address = "0x1ed8d101622beaf192d06137dfb220851bcad9fa"
+            .parse()
+            .unwrap();
+        let raw = serde_json::to_value(DwellirOutgoing::Subscribe {
+            subscription: DwellirSubscription::Trades {
+                coin: "BTC".into(),
+                user: Some(user),
+            },
+        })
+        .unwrap();
+
+        assert_eq!(raw["method"], "subscribe");
+        assert_eq!(raw["subscription"]["type"], "trades");
+        assert_eq!(raw["subscription"]["coin"], "BTC");
+        assert_eq!(
+            raw["subscription"]["user"],
+            "0x1ed8d101622beaf192d06137dfb220851bcad9fa"
+        );
+    }
+
+    #[test]
+    fn parses_trades_message() {
+        let raw = r#"{
+            "channel": "trades",
+            "data": [
+                {
+                    "coin": "BTC",
+                    "side": "B",
+                    "px": "90058.0",
+                    "sz": "0.00012",
+                    "hash": "0x0a4cc891f222c1cf0bc60432f4991e02013400778d25e0a1ae1573e4b1269bb9",
+                    "time": 1767878803102,
+                    "tid": 907188554740561,
+                    "users": [
+                        "0xb08ed6f6ad7b22138d4db6d0549efcf1f5e51767",
+                        "0x13558be785661958932ceac35ba20de187275a42"
+                    ]
+                }
+            ]
+        }"#;
+        let msg: DwellirIncoming = serde_json::from_str(raw).unwrap();
+        let DwellirIncoming::Trades(trades) = msg else {
+            panic!("expected trades");
+        };
+        assert_eq!(trades.len(), 1);
+        let trade = &trades[0];
+        assert_eq!(trade.coin, "BTC");
+        assert_eq!(trade.side, Side::Bid);
+        assert!(trade.is_buy());
+        assert_eq!(trade.px.to_string(), "90058.0");
+        assert_eq!(trade.sz.to_string(), "0.00012");
+        assert_eq!(trade.tid, 907188554740561);
+        assert_eq!(
+            trade.taker_address(),
+            "0xb08ed6f6ad7b22138d4db6d0549efcf1f5e51767"
+                .parse::<Address>()
+                .unwrap()
+        );
+    }
 
     #[test]
     fn parses_l4_snapshot() {

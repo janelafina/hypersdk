@@ -73,6 +73,7 @@ async fn main() -> Result<()> {
                     );
                 }
             }
+            L4Event::Message(DwellirIncoming::Trades(_)) => {}
         }
     }
 
