@@ -1,4 +1,4 @@
-//! Reconnecting WebSocket client for Dwellir's L4 order-book feed.
+//! Reconnecting WebSocket client for Dwellir's Hyperliquid feed.
 //!
 //! Mirrors [`crate::hypercore::ws::Connection`] in shape and guarantees:
 //! - Exponential backoff on connection failure.
@@ -6,7 +6,7 @@
 //! - [`Event::Connected`] / [`Event::Disconnected`] lifecycle events are
 //!   emitted on the stream so consumers can track health.
 //! - Standard WebSocket control-frame ping/pong is handled by the underlying
-//!   transport; the Dwellir L4 feed does not define JSON-level heartbeats.
+//!   transport; the Dwellir feed does not define JSON-level heartbeats.
 
 use std::{
     collections::HashSet,
@@ -15,6 +15,7 @@ use std::{
     time::Duration,
 };
 
+use alloy::primitives::Address;
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use tokio::{
@@ -143,9 +144,41 @@ impl L4Connection {
         let _ = self.tx.send((true, subscription));
     }
 
+    /// Subscribes to real-time trades for `coin`.
+    pub fn subscribe_trades(&self, coin: impl Into<String>) {
+        self.subscribe(DwellirSubscription::Trades {
+            coin: coin.into(),
+            user: None,
+        });
+    }
+
+    /// Subscribes to real-time trades for `coin` involving `user`.
+    pub fn subscribe_user_trades(&self, coin: impl Into<String>, user: Address) {
+        self.subscribe(DwellirSubscription::Trades {
+            coin: coin.into(),
+            user: Some(user),
+        });
+    }
+
     /// Unsubscribes from a channel.
     pub fn unsubscribe(&self, subscription: DwellirSubscription) {
         let _ = self.tx.send((false, subscription));
+    }
+
+    /// Unsubscribes from real-time trades for `coin`.
+    pub fn unsubscribe_trades(&self, coin: impl Into<String>) {
+        self.unsubscribe(DwellirSubscription::Trades {
+            coin: coin.into(),
+            user: None,
+        });
+    }
+
+    /// Unsubscribes from real-time trades for `coin` involving `user`.
+    pub fn unsubscribe_user_trades(&self, coin: impl Into<String>, user: Address) {
+        self.unsubscribe(DwellirSubscription::Trades {
+            coin: coin.into(),
+            user: Some(user),
+        });
     }
 
     /// Splits the connection into an independent subscription handle and an
@@ -174,8 +207,32 @@ impl L4ConnectionHandle {
     pub fn subscribe(&self, subscription: DwellirSubscription) {
         let _ = self.tx.send((true, subscription));
     }
+    pub fn subscribe_trades(&self, coin: impl Into<String>) {
+        self.subscribe(DwellirSubscription::Trades {
+            coin: coin.into(),
+            user: None,
+        });
+    }
+    pub fn subscribe_user_trades(&self, coin: impl Into<String>, user: Address) {
+        self.subscribe(DwellirSubscription::Trades {
+            coin: coin.into(),
+            user: Some(user),
+        });
+    }
     pub fn unsubscribe(&self, subscription: DwellirSubscription) {
         let _ = self.tx.send((false, subscription));
+    }
+    pub fn unsubscribe_trades(&self, coin: impl Into<String>) {
+        self.unsubscribe(DwellirSubscription::Trades {
+            coin: coin.into(),
+            user: None,
+        });
+    }
+    pub fn unsubscribe_user_trades(&self, coin: impl Into<String>, user: Address) {
+        self.unsubscribe(DwellirSubscription::Trades {
+            coin: coin.into(),
+            user: Some(user),
+        });
     }
     pub fn close(self) {
         drop(self);

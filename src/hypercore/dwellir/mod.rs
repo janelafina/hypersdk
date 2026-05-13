@@ -5,9 +5,12 @@
 //!
 //! - **Info Endpoint** — authenticated HTTP JSON queries for user open orders
 //!   and positions. See [`InfoClient`].
-//! - **L4 order book** — per-order book data (individual orders, wallet
+//! - **L4 order book** - per-order book data (individual orders, wallet
 //!   addresses, order IDs). Delivered over WebSocket. See [`L4Connection`].
-//! - **Fills** — real-time fills across the whole chain, delivered as a gRPC
+//! - **Trades** - real-time executions, optionally filtered by wallet.
+//!   Delivered over the same Dwellir WebSocket connection. See
+//!   [`DwellirSubscription::Trades`].
+//! - **Fills** - real-time fills across the whole chain, delivered as a gRPC
 //!   server-streaming RPC. See [`FillsConnection`].
 //!
 //! Both connections share the same event-oriented shape as the existing
@@ -30,8 +33,8 @@
 //! | `DWELLIR_GRPC_ENDPOINT`| Backward-compatible fallback for the fills gRPC endpoint.     |
 //!
 //! [`Config`] lets callers configure the dedicated node once and then derive
-//! the L4 WebSocket endpoint, fills gRPC endpoint, and HTTP info client from it.
-//! See [`Config::from_env`], [`info_from_env`], [`l4_from_env`], and
+//! the WebSocket endpoint, fills gRPC endpoint, and HTTP info client from it.
+//! See [`Config::from_env`], [`info_from_env`], [`ws_from_env`], and
 //! [`fills_from_env`] for convenience wrappers.
 
 pub mod grpc;
@@ -55,9 +58,19 @@ pub use http::{
     dedicated_node_info_base_url,
 };
 pub use types::*;
-pub use ws::{Event as L4Event, L4Connection, L4ConnectionHandle, L4ConnectionStream};
+pub use ws::{
+    Event as DwellirWsEvent, Event as L4Event, L4Connection, L4ConnectionHandle,
+    L4ConnectionStream,
+};
 
-/// Env var name for the Dwellir L4 WebSocket endpoint.
+/// General Dwellir WebSocket connection. Alias for the original L4-named type.
+pub type DwellirWsConnection = L4Connection;
+/// Subscription handle for [`DwellirWsConnection`].
+pub type DwellirWsConnectionHandle = L4ConnectionHandle;
+/// Event stream for [`DwellirWsConnection`].
+pub type DwellirWsConnectionStream = L4ConnectionStream;
+
+/// Env var name for the Dwellir WebSocket endpoint.
 pub const WS_ENDPOINT_ENV: &str = "DWELLIR_WS_ENDPOINT";
 /// Env var name for the Dwellir dedicated node host.
 pub const NODE_HOST_ENV: &str = "DWELLIR_NODE_HOST";
@@ -168,10 +181,18 @@ impl Config {
         InfoClient::for_dedicated_node(self.api_key.clone(), &self.node_host)
     }
 
+    /// Builds a WebSocket connection for the configured dedicated node.
+    #[must_use]
+    pub fn ws_connection(&self) -> L4Connection {
+        L4Connection::new(self.ws_endpoint())
+    }
+
     /// Builds an L4 WebSocket connection for the configured dedicated node.
+    ///
+    /// This is an alias for [`Self::ws_connection`].
     #[must_use]
     pub fn l4_connection(&self) -> L4Connection {
-        L4Connection::new(self.ws_endpoint())
+        self.ws_connection()
     }
 
     /// Builds a fills gRPC connection for the configured dedicated node.
@@ -222,9 +243,16 @@ pub fn info_from_env() -> Result<InfoClient> {
     Config::from_env()?.info_client()
 }
 
+/// Builds a Dwellir WebSocket connection using [`NODE_HOST_ENV`] and [`API_KEY_ENV`].
+pub fn ws_from_env() -> Result<L4Connection> {
+    Ok(Config::from_env()?.ws_connection())
+}
+
 /// Builds an L4 WebSocket connection using [`NODE_HOST_ENV`] and [`API_KEY_ENV`].
+///
+/// This is an alias for [`ws_from_env`].
 pub fn l4_from_env() -> Result<L4Connection> {
-    Ok(Config::from_env()?.l4_connection())
+    ws_from_env()
 }
 
 /// Builds a fills gRPC connection using [`NODE_HOST_ENV`] and [`API_KEY_ENV`],
