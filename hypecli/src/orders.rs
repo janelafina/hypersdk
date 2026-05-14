@@ -150,6 +150,7 @@ impl LimitOrderCmd {
         let batch = BatchOrder {
             orders: vec![order],
             grouping: OrderGrouping::Na,
+            builder: None,
         };
 
         let nonce = std::time::SystemTime::now()
@@ -242,6 +243,7 @@ impl MarketOrderCmd {
         let batch = BatchOrder {
             orders: vec![order],
             grouping: OrderGrouping::Na,
+            builder: None,
         };
 
         let nonce = std::time::SystemTime::now()

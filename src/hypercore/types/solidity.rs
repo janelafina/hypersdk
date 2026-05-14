@@ -44,6 +44,13 @@ sol! {
         uint64 nonce;
     }
 
+    struct ApproveBuilderFee {
+        string hyperliquidChain;
+        string maxFeeRate;
+        address builder;
+        uint64 nonce;
+    }
+
     struct ConvertToMultiSigUser {
         string hyperliquidChain;
         string signers;

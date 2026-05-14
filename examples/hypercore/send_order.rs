@@ -57,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
                     cloid: Cloid::random(),
                 }],
                 grouping: OrderGrouping::Na,
+                builder: None,
             },
             nonce.next(),
             vault_address,

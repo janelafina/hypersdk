@@ -88,6 +88,8 @@ pub enum Action {
         using_big_blocks: bool,
     },
     ApproveAgent(ApproveAgent),
+    /// Approve maximum builder fee for a builder address.
+    ApproveBuilderFee(ApproveBuilderFee),
     /// Convert to multi-signature user.
     ConvertToMultiSigUser(ConvertToMultiSigUser),
     /// Update isolated margin.
@@ -247,6 +249,10 @@ impl Action {
                 let typed_data = get_typed_data::<solidity::ApproveAgent>(&inner, chain, None);
                 signer.sign_dynamic_typed_data_sync(&typed_data)?
             }
+            Action::ApproveBuilderFee(inner) => {
+                let typed_data = get_typed_data::<solidity::ApproveBuilderFee>(&inner, chain, None);
+                signer.sign_dynamic_typed_data_sync(&typed_data)?
+            }
             Action::ConvertToMultiSigUser(inner) => {
                 let typed_data =
                     get_typed_data::<solidity::ConvertToMultiSigUser>(&inner, chain, None);
@@ -355,6 +361,10 @@ impl Action {
                 let typed_data = get_typed_data::<solidity::ApproveAgent>(&inner, chain, None);
                 signer.sign_dynamic_typed_data(&typed_data).await?
             }
+            Action::ApproveBuilderFee(inner) => {
+                let typed_data = get_typed_data::<solidity::ApproveBuilderFee>(&inner, chain, None);
+                signer.sign_dynamic_typed_data(&typed_data).await?
+            }
             Action::ConvertToMultiSigUser(inner) => {
                 let typed_data =
                     get_typed_data::<solidity::ConvertToMultiSigUser>(&inner, chain, None);
@@ -457,6 +467,10 @@ impl Action {
             }
             Action::ApproveAgent(inner) => {
                 let typed_data = get_typed_data::<solidity::ApproveAgent>(&inner, chain, None);
+                Ok(typed_data.eip712_signing_hash()?)
+            }
+            Action::ApproveBuilderFee(inner) => {
+                let typed_data = get_typed_data::<solidity::ApproveBuilderFee>(&inner, chain, None);
                 Ok(typed_data.eip712_signing_hash()?)
             }
             Action::ConvertToMultiSigUser(inner) => {
@@ -715,6 +729,29 @@ pub struct ApproveAgent {
     /// up to 3 named ones, and 2 named agents per subaccount.
     pub agent_name: Option<String>,
     /// Request nonce
+    pub nonce: u64,
+}
+
+/// Approve builder fee.
+///
+/// Approves the maximum fee rate a builder is allowed to charge for routed orders.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#approve-a-builder-fee>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ApproveBuilderFee {
+    /// Signature chain ID.
+    ///
+    /// For arbitrum use [`crate::hypercore::ARBITRUM_MAINNET_CHAIN_ID`] or [`crate::hypercore::ARBITRUM_TESTNET_CHAIN_ID`].
+    pub signature_chain_id: String,
+    /// The chain this action is being executed on.
+    pub hyperliquid_chain: Chain,
+    /// The maximum allowed builder fee rate as a percent string; e.g. "0.001%".
+    pub max_fee_rate: String,
+    /// Builder address.
+    pub builder: Address,
+    /// Request nonce (timestamp in milliseconds).
+    /// Must match nonce in outer request body.
     pub nonce: u64,
 }
 
@@ -1243,6 +1280,40 @@ mod tests {
             assert_eq!(ul.leverage, 10);
         } else {
             assert!(false, "wrong variant");
+        }
+    }
+
+    #[test]
+    fn approve_builder_fee_serialization() {
+        let action = Action::ApproveBuilderFee(ApproveBuilderFee {
+            signature_chain_id: "0xa4b1".to_string(),
+            hyperliquid_chain: Chain::Mainnet,
+            max_fee_rate: "0.001%".to_string(),
+            builder: "0x8c967e73e7b15087c42a10d344cff4c96d877f1d"
+                .parse()
+                .unwrap(),
+            nonce: 1_700_000_000_000,
+        });
+
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"approveBuilderFee\""));
+        assert!(json.contains("\"maxFeeRate\":\"0.001%\""));
+        assert!(json.contains("\"builder\":\"0x8c967e73e7b15087c42a10d344cff4c96d877f1d\""));
+        assert!(json.contains("\"nonce\":1700000000000"));
+
+        let deserialized: Action = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Action::ApproveBuilderFee(inner) => {
+                assert_eq!(inner.max_fee_rate, "0.001%");
+                assert_eq!(
+                    inner.builder,
+                    "0x8c967e73e7b15087c42a10d344cff4c96d877f1d"
+                        .parse::<Address>()
+                        .unwrap()
+                );
+                assert_eq!(inner.nonce, 1_700_000_000_000);
+            }
+            _ => assert!(false, "wrong variant"),
         }
     }
 

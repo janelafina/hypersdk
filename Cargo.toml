@@ -120,6 +120,10 @@ name = "user_role"
 path = "examples/hypercore/user_role.rs"
 
 [[example]]
+name = "max_builder_fee"
+path = "examples/hypercore/max_builder_fee.rs"
+
+[[example]]
 name = "user_fees"
 path = "examples/hypercore/user_fees.rs"
 

@@ -306,6 +306,7 @@ mod tests {
                 cloid: Default::default(),
             }],
             grouping: OrderGrouping::Na,
+            builder: None,
         };
 
         let action = Action::Order(order.clone());
@@ -346,6 +347,7 @@ mod tests {
                 cloid: Default::default(),
             }],
             grouping: OrderGrouping::PriorityRate(80_000),
+            builder: None,
         };
 
         let action = Action::Order(batch.clone());

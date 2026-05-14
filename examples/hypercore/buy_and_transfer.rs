@@ -81,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cloid: Cloid::random(),
             }],
             grouping: OrderGrouping::Na,
+            builder: None,
         },
         nonce,
         None,
