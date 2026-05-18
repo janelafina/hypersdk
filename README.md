@@ -448,6 +448,7 @@ PRIVATE_KEY=your_private_key_here
 ## Documentation
 
 - [API Documentation](https://docs.rs/hypersdk)
+- [Dwellir trade and L4 book stream API](DWELLIR_STREAMS.md)
 - [Hyperliquid Documentation](https://hyperliquid.gitbook.io/hyperliquid-docs/)
 - [Examples](./examples/)
 
