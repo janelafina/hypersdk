@@ -64,6 +64,10 @@ async fn main() -> anyhow::Result<()> {
     ws.subscribe(Subscription::ClearinghouseState { user, dex: None });
     ws.subscribe(Subscription::AllDexsClearinghouseState { user });
     ws.subscribe(Subscription::OpenOrders { user, dex: None });
+    ws.subscribe(Subscription::SpotState {
+        user,
+        is_portfolio_margin: None,
+    });
 
     log::info!(
         "Subscribed for user={} coin={}. Waiting for events...",
@@ -168,6 +172,9 @@ async fn main() -> anyhow::Result<()> {
                         user,
                         clearinghouse_states.len()
                     );
+                }
+                Incoming::SpotState { user, spot_state } => {
+                    println!("SpotState: user={} spot_state={:?}", user, spot_state);
                 }
                 Incoming::OpenOrders { dex, user, orders } => {
                     println!(

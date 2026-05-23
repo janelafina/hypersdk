@@ -379,6 +379,13 @@ pub enum Subscription {
         #[serde(skip_serializing_if = "Option::is_none")]
         dex: Option<String>,
     },
+    #[display("spotState({user},{is_portfolio_margin:?})")]
+    SpotState {
+        user: Address,
+        #[serde(rename = "camelCase")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        is_portfolio_margin: Option<bool>,
+    },
 }
 
 /// Hyperliquid websocket message.
@@ -499,6 +506,12 @@ pub enum Incoming {
         dex: Option<String>,
         user: Address,
         orders: Vec<OpenOrder>,
+    },
+    /// Spot state update
+    #[serde(rename_all = "camelCase")]
+    SpotState {
+        user: Address,
+        spot_state: SpotState,
     },
     /// Server heartbeat ping
     Ping,
@@ -2876,7 +2889,7 @@ pub struct SpotAssetContext {
 /// }
 /// # }
 /// ```
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct UserBalance {
     /// Token symbol
@@ -3362,7 +3375,7 @@ pub struct SubAccount {
 /// Spot trading state for an account.
 ///
 /// Contains the spot balances for an account.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpotState {
     /// List of spot balances
