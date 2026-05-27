@@ -3619,7 +3619,7 @@ pub(super) enum InfoRequest {
     /// Query gossip priority auction status.
     GossipPriorityAuctionStatus,
     /// Query account abstraction mode for a user.
-    AbstractionMode {
+    UserAbstraction {
         user: Address,
     },
     /// Check builder fee approval for a user.

@@ -1932,11 +1932,13 @@ impl Client {
     ///
     /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#retrieve-abstraction-mode>
     pub async fn abstraction_mode(&self, user: Address) -> Result<AbstractionMode> {
-        let req = InfoRequest::AbstractionMode { user };
+        let req = InfoRequest::UserAbstraction { user };
         // Response is a plain string like "unifiedAccount" or "disabled"
-        let s: String = self.send_info_request("abstraction_mode", &req).await?;
+        let s: String = self
+            .send_info_request("user_abstraction_mode", &req)
+            .await?;
         AbstractionMode::from_api_str(&s)
-            .map_err(|e| anyhow!("failed to parse abstraction mode: {e}"))
+            .map_err(|e| anyhow!("failed to parse user abstraction mode: {e}"))
     }
 
     /// Set abstraction mode via agent-signed action (L1/RMP signing).
