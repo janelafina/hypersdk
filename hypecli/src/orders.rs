@@ -45,14 +45,16 @@ impl OrderCmd {
 }
 
 /// Order side (buy or sell).
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, ValueEnum, derive_more::Display)]
 pub enum Side {
+    #[display("BUY")]
     Buy,
+    #[display("SELL")]
     Sell,
 }
 
 impl Side {
-    fn is_buy(&self) -> bool {
+    pub fn is_buy(&self) -> bool {
         matches!(self, Side::Buy)
     }
 }

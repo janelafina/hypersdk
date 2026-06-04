@@ -90,10 +90,11 @@ pub(super) mod solidity;
 
 // Re-export important raw types for convenience
 pub use api::{
-    AbstractionMode, Action, ActionRequest, ApproveBuilderFee, GossipPriorityBid, MultiSigAction,
-    MultiSigPayload, OkResponse, Response, UserDexAbstractionAction, UserSetAbstractionAction,
+    AbstractionMode, Action, ActionRequest, ApproveBuilderFee, GossipPriorityBid,
+    Hip3LiquidatorTransferAction, MultiSigAction, MultiSigPayload, OkResponse, Response,
+    TokenDelegateAction, TwapOrderParams, UsdClassTransferAction, UserDexAbstractionAction,
+    UserSetAbstractionAction, Withdraw3Action,
 };
-// Import from raw module (which is now a submodule)
 use api::{AgentSendAssetAction, SendAssetAction, SpotSendAction, UsdSendAction};
 
 fn decimal_from_json_value(value: &serde_json::Value) -> Result<Decimal, String> {
@@ -197,6 +198,12 @@ impl Dex {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the DEX index.
+    #[must_use]
+    pub fn index(&self) -> usize {
+        self.index
     }
 
     /// Returns the deployer fee scale for this DEX.
@@ -359,6 +366,55 @@ pub enum Subscription {
         #[serde(skip_serializing_if = "Option::is_none")]
         dex: Option<String>,
     },
+    #[display("clearinghouseState({user},{dex:?})")]
+    ClearinghouseState {
+        user: Address,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dex: Option<String>,
+    },
+    #[display("allDexsClearinghouseState({user})")]
+    AllDexsClearinghouseState { user: Address },
+    #[display("openOrders({user},{dex:?})")]
+    OpenOrders {
+        user: Address,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dex: Option<String>,
+    },
+    #[display("spotState({user},{is_portfolio_margin:?})")]
+    SpotState {
+        user: Address,
+        #[serde(
+            default,
+            rename = "isPortfolioMargin",
+            skip_serializing_if = "Option::is_none"
+        )]
+        is_portfolio_margin: Option<bool>,
+    },
+    /// User notifications
+    #[display("notification({user})")]
+    Notification { user: Address },
+    /// Frontend-oriented aggregate user data feed (v3, replaces WebData2)
+    #[display("webData3({user})")]
+    WebData3 { user: Address },
+    /// Active TWAP order states
+    #[display("twapStates({user},{dex:?})")]
+    TwapStates {
+        user: Address,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dex: Option<String>,
+    },
+    /// Real-time funding updates
+    #[display("userFundings({user})")]
+    UserFundings { user: Address },
+    /// Non-funding ledger events
+    #[display("userNonFundingLedgerUpdates({user})")]
+    UserNonFundingLedgerUpdates { user: Address },
+    /// Asset contexts across all DEXs
+    #[display("allDexsAssetCtxs")]
+    AllDexsAssetCtxs,
+    /// Outcome market metadata updates
+    #[display("outcomeMetaUpdates")]
+    OutcomeMetaUpdates,
 }
 
 /// Hyperliquid websocket message.
@@ -461,6 +517,67 @@ pub enum Incoming {
         #[serde(flatten)]
         data: serde_json::Value,
     },
+    /// Clearing house state for a user on a specific dex
+    #[serde(rename_all = "camelCase")]
+    ClearinghouseState {
+        dex: Option<String>,
+        user: Address,
+        clearinghouse_state: ClearinghouseState,
+    },
+    /// Clearing house state for a user on a all dexs
+    #[serde(rename_all = "camelCase")]
+    AllDexsClearinghouseState {
+        user: Address,
+        clearinghouse_states: Vec<(String, ClearinghouseState)>,
+    },
+    /// Open orders for a user on a specific dex
+    OpenOrders {
+        dex: Option<String>,
+        user: Address,
+        orders: Vec<OpenOrder>,
+    },
+    /// Spot state update
+    #[serde(rename_all = "camelCase")]
+    SpotState {
+        user: Address,
+        spot_state: SpotState,
+    },
+    /// User notification
+    Notification { notification: String },
+    /// Frontend aggregate user snapshot v3 (dynamic schema)
+    WebData3 {
+        #[serde(flatten)]
+        data: serde_json::Value,
+    },
+    /// Active TWAP order states
+    #[serde(rename_all = "camelCase")]
+    TwapStates {
+        dex: Option<String>,
+        user: Address,
+        states: Vec<(u64, serde_json::Value)>,
+    },
+    /// Real-time user funding updates
+    #[serde(rename_all = "camelCase")]
+    UserFundings {
+        #[serde(default)]
+        is_snapshot: bool,
+        user: Address,
+        fundings: Vec<UserFundingEntry>,
+    },
+    /// Non-funding ledger updates
+    #[serde(rename_all = "camelCase")]
+    UserNonFundingLedgerUpdates {
+        #[serde(default)]
+        is_snapshot: bool,
+        user: Address,
+        updates: Vec<serde_json::Value>,
+    },
+    /// Asset contexts across all DEXs
+    AllDexsAssetCtxs {
+        ctxs: Vec<(String, Vec<PerpAssetCtx>)>,
+    },
+    /// Outcome market metadata updates
+    OutcomeMetaUpdates(serde_json::Value),
     /// Server heartbeat ping
     Ping,
     /// Server heartbeat pong
@@ -1199,6 +1316,9 @@ pub struct Fill {
     pub cloid: Option<B128>,
     /// Fee token
     pub fee_token: String,
+    /// Builder fee amount, if a builder was used
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder_fee: Option<Decimal>,
     /// Liquidation details, if applicable
     #[serde(skip_serializing_if = "Option::is_none")]
     pub liquidation: Option<Liquidation>,
@@ -1313,6 +1433,8 @@ pub struct UserLeverage {
     pub leverage_type: String,
     #[serde(deserialize_with = "deserialize_decimal_from_any")]
     pub value: Decimal,
+    #[serde(default)]
+    pub raw_usd: Option<Decimal>,
 }
 
 /// `activeAssetData` feed payload.
@@ -1334,6 +1456,8 @@ pub struct ActiveAssetData {
         deserialize_with = "deserialize_optional_decimal_pair_from_any"
     )]
     pub available_to_trade: Option<[Decimal; 2]>,
+    #[serde(default)]
+    pub mark_px: Option<Decimal>,
 }
 
 impl ActiveAssetData {
@@ -1458,6 +1582,18 @@ pub struct BasicOrder {
     pub tif: Option<TimeInForce>,
     /// Whether this order should only reduce an existing position.
     pub reduce_only: bool,
+    /// Whether this is a trigger (stop/take-profit) order (`frontendOpenOrders` only).
+    #[serde(default)]
+    pub is_trigger: Option<bool>,
+    /// Trigger price for stop/take-profit orders (`frontendOpenOrders` only).
+    #[serde(default)]
+    pub trigger_px: Option<Decimal>,
+    /// Trigger condition string, e.g. "Price above 10.0" or "N/A" (`frontendOpenOrders` only).
+    #[serde(default)]
+    pub trigger_condition: Option<String>,
+    /// Whether the order is part of a position-level TP/SL bracket (`frontendOpenOrders` only).
+    #[serde(default)]
+    pub is_position_tpsl: Option<bool>,
 }
 
 /// Basic order information for WebSocket updates.
@@ -1486,6 +1622,19 @@ pub struct WsBasicOrder {
     pub orig_sz: Decimal,
     /// Client-assigned order ID (if set).
     pub cloid: Option<B128>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde_as]
+#[serde(rename_all = "camelCase")]
+pub struct OpenOrder {
+    #[serde(flatten)]
+    pub basic_order: BasicOrder,
+    pub trigger_condition: String,
+    pub is_trigger: bool,
+    pub trigger_px: Decimal,
+    pub children: Vec<OpenOrder>,
+    pub is_position_tpsl: bool,
 }
 
 /// Liquidation details.
@@ -2033,6 +2182,8 @@ impl AgentSendAsset {
 /// # Variants
 ///
 /// - **Success**: Order was accepted (generic success)
+/// - **WaitingForTrigger**: Trigger order accepted, waiting for its trigger price
+/// - **WaitingForFill**: Order accepted, waiting to be filled
 /// - **Resting**: Order is resting on the book (not immediately filled)
 /// - **Filled**: Order was immediately filled (market or aggressive limit)
 /// - **Error**: Order was rejected with an error message
@@ -2046,6 +2197,12 @@ impl AgentSendAsset {
 /// match status {
 ///     OrderResponseStatus::Success => {
 ///         println!("Order accepted");
+///     }
+///     OrderResponseStatus::WaitingForTrigger => {
+///         println!("Trigger order waiting for trigger price");
+///     }
+///     OrderResponseStatus::WaitingForFill => {
+///         println!("Order waiting to fill");
 ///     }
 ///     OrderResponseStatus::Resting { oid, cloid } => {
 ///         println!("Order {} resting on book", oid);
@@ -2064,6 +2221,10 @@ impl AgentSendAsset {
 pub enum OrderResponseStatus {
     /// Order accepted (generic)
     Success,
+    /// Trigger order accepted, waiting for its trigger price to be reached
+    WaitingForTrigger,
+    /// Order accepted, waiting to be filled
+    WaitingForFill,
     /// Order resting on book
     Resting {
         /// Order ID
@@ -2433,7 +2594,7 @@ pub struct ScheduleCancel {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClearinghouseState {
     /// Margin summary for isolated positions
@@ -2453,7 +2614,7 @@ pub struct ClearinghouseState {
 /// Margin summary for an account.
 ///
 /// Contains aggregate margin information for either isolated or cross-margin positions.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarginSummary {
     /// Total account value (equity)
@@ -2487,7 +2648,7 @@ impl MarginSummary {
 }
 
 /// Position type for perpetual positions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, derive_more::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
 #[serde(rename_all = "camelCase")]
 pub enum PositionType {
     /// One-way position mode (single position per market)
@@ -2498,7 +2659,7 @@ pub enum PositionType {
 /// A user's position in a specific asset.
 ///
 /// Wraps the position details along with cumulative funding information.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetPosition {
     /// Type of position
@@ -2511,7 +2672,7 @@ pub struct AssetPosition {
 /// Detailed position data for an asset.
 ///
 /// Contains all information about a single perpetual position.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PositionData {
     /// Asset/coin symbol (e.g., "BTC", "ETH")
@@ -2565,7 +2726,7 @@ impl PositionData {
 }
 
 /// Leverage type for positions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, derive_more::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, derive_more::Display)]
 #[serde(rename_all = "camelCase")]
 pub enum LeverageType {
     /// Cross-margin mode (shared margin across positions)
@@ -2577,7 +2738,7 @@ pub enum LeverageType {
 }
 
 /// Leverage configuration for a position.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Leverage {
     /// Leverage type
@@ -2608,7 +2769,7 @@ impl Leverage {
 /// Cumulative funding payments for a position.
 ///
 /// Tracks funding payments over different time periods.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CumulativeFunding {
     /// Total funding payments since position opened
@@ -2749,6 +2910,9 @@ pub struct AssetContext {
     /// Impact prices [bid, ask] for funding calculation
     #[serde(default)]
     pub impact_pxs: Option<Vec<String>>,
+    /// 24h base volume (HIP-3 DEXs only)
+    #[serde(with = "rust_decimal::serde::str_option", default)]
+    pub day_base_vlm: Option<Decimal>,
 }
 
 impl AssetContext {
@@ -2824,7 +2988,7 @@ pub struct SpotAssetContext {
 /// }
 /// # }
 /// ```
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct UserBalance {
     /// Token symbol
@@ -2843,22 +3007,193 @@ pub struct UserBalance {
 /// User-specific trading fee rates.
 ///
 /// Returned by the `userFees` info endpoint.
-///
-/// - `maker_rate` maps to `userAddRate` (adding liquidity)
-/// - `taker_rate` maps to `userCrossRate` (crossing liquidity)
-/// - `referral_discount` maps to `activeReferralDiscount`
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserFees {
-    /// Effective maker fee rate for the user (`userAddRate`).
+    /// Daily user volume breakdown by date.
+    pub daily_user_vlm: serde_json::Value,
+    /// Fee schedule details.
+    pub fee_schedule: serde_json::Value,
+    /// Effective perpetual maker fee rate.
     #[serde(rename = "userAddRate")]
     pub maker_rate: Decimal,
-    /// Effective taker fee rate for the user (`userCrossRate`).
+    /// Effective perpetual taker fee rate.
     #[serde(rename = "userCrossRate")]
     pub taker_rate: Decimal,
+    /// Effective spot maker fee rate.
+    #[serde(rename = "userSpotAddRate")]
+    pub spot_maker_rate: Decimal,
+    /// Effective spot taker fee rate.
+    #[serde(rename = "userSpotCrossRate")]
+    pub spot_taker_rate: Decimal,
     /// Active referral discount applied to the user.
-    #[serde(rename = "activeReferralDiscount")]
-    pub referral_discount: Decimal,
+    pub active_referral_discount: Decimal,
+    /// Whether the user is in a fee trial period.
+    #[serde(default)]
+    pub trial: Option<serde_json::Value>,
+    /// Link to staking discount.
+    #[serde(default)]
+    pub staking_link: Option<serde_json::Value>,
+    /// Active staking discount.
+    #[serde(default)]
+    pub active_staking_discount: Option<serde_json::Value>,
+    /// Fee trial escrow.
+    #[serde(default)]
+    pub fee_trial_escrow: Option<String>,
+    /// Next trial available timestamp.
+    #[serde(default)]
+    pub next_trial_available_timestamp: Option<u64>,
+}
+
+/// User rate limit information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserRateLimit {
+    pub cum_vlm: Decimal,
+    pub n_requests_used: u64,
+    pub n_requests_cap: u64,
+    #[serde(default)]
+    pub n_requests_surplus: Option<u64>,
+}
+
+/// Perp asset context (funding rate, mark price, open interest, etc).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerpAssetCtx {
+    pub day_ntl_vlm: Decimal,
+    pub funding: Decimal,
+    #[serde(default)]
+    pub impact_pxs: Option<Vec<String>>,
+    pub mark_px: Decimal,
+    pub mid_px: Option<Decimal>,
+    pub open_interest: Decimal,
+    pub oracle_px: Decimal,
+    pub premium: Option<Decimal>,
+    pub prev_day_px: Decimal,
+    #[serde(default)]
+    pub day_base_vlm: Option<Decimal>,
+}
+
+/// Spot asset context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpotAssetCtx {
+    pub day_ntl_vlm: Decimal,
+    pub mark_px: Decimal,
+    pub mid_px: Option<Decimal>,
+    pub prev_day_px: Decimal,
+}
+
+/// User funding delta.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserFundingDelta {
+    #[serde(rename = "type")]
+    pub delta_type: String,
+    pub coin: String,
+    pub usdc: Decimal,
+    pub szi: Decimal,
+    pub funding_rate: Decimal,
+    #[serde(default)]
+    pub n_samples: Option<u64>,
+}
+
+/// User funding entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserFundingEntry {
+    pub delta: UserFundingDelta,
+    pub hash: String,
+    pub time: u64,
+}
+
+/// Predicted funding for a venue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PredictedFundingVenue {
+    pub funding_rate: Decimal,
+    pub next_funding_time: u64,
+}
+
+/// Staking delegation entry.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Delegation {
+    pub validator: Address,
+    pub amount: Decimal,
+    pub locked_until_timestamp: Option<u64>,
+}
+
+/// Delegation summary.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegatorSummary {
+    pub delegated: Decimal,
+    pub undelegated: Decimal,
+    pub total_pending_withdrawal: Decimal,
+    pub n_pending_withdrawals: u64,
+}
+
+/// Perp deploy auction status.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeployAuctionStatus {
+    pub start_time_seconds: u64,
+    pub duration_seconds: u64,
+    pub start_gas: Decimal,
+    pub current_gas: Decimal,
+    pub end_gas: Option<Decimal>,
+}
+
+/// HIP-3 DEX limits.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerpDexLimits {
+    pub total_oi_cap: Option<Decimal>,
+    pub oi_sz_cap_per_perp: Option<Decimal>,
+    pub max_transfer_ntl: Option<Decimal>,
+    #[serde(default)]
+    pub coin_to_oi_cap: Option<serde_json::Value>,
+}
+
+/// HIP-3 DEX status.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerpDexStatus {
+    pub total_net_deposit: Decimal,
+}
+
+/// Token details from `tokenDetails` info request.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenDetails {
+    pub name: String,
+    #[serde(default)]
+    pub max_supply: Option<Decimal>,
+    pub total_supply: Option<Decimal>,
+    pub circulating_supply: Option<Decimal>,
+    pub sz_decimals: i64,
+    pub wei_decimals: i64,
+    #[serde(default)]
+    pub mid_px: Option<Decimal>,
+    #[serde(default)]
+    pub mark_px: Option<Decimal>,
+    #[serde(default)]
+    pub prev_day_px: Option<Decimal>,
+    #[serde(default)]
+    pub genesis: Option<serde_json::Value>,
+    #[serde(default)]
+    pub deployer: Option<Address>,
+    #[serde(default)]
+    pub deploy_gas: Option<u64>,
+    #[serde(default)]
+    pub deploy_time: Option<u64>,
+    #[serde(default)]
+    pub seeded_usdc: Option<Decimal>,
+    #[serde(default)]
+    pub future_emissions: Option<serde_json::Value>,
+    #[serde(default)]
+    pub non_circulating_user_balances: Option<serde_json::Value>,
 }
 
 impl UserBalance {
@@ -3095,22 +3430,18 @@ pub struct VaultDetails {
 /// ```
 ///
 /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GossipPrioritySlot {
     /// Unix timestamp (seconds) when this auction cycle started.
     pub start_time_seconds: u64,
     /// Duration of each Dutch auction cycle in seconds (typically 180).
     pub duration_seconds: u64,
-    /// Price at which the current cycle opened. Denominated in HYPE as a decimal string.
-    pub start_gas: String,
-    /// Current Dutch auction price, or `None` if no bid has landed yet this cycle.
-    /// Denominated in HYPE as a decimal string.
+    pub start_gas: Decimal,
     #[serde(default)]
-    pub current_gas: Option<String>,
-    /// Minimum floor price for this slot's Dutch auction (typically "0.1").
+    pub current_gas: Option<Decimal>,
     #[serde(default)]
-    pub end_gas: Option<String>,
+    pub end_gas: Option<Decimal>,
 }
 
 /// Gossip priority auction status returned by the `/info` endpoint.
@@ -3125,7 +3456,7 @@ pub struct GossipPrioritySlot {
 /// The first inner array contains the **previous cycle's** winning signer addresses
 /// (or `null`) for slots 0–4. The second inner array contains the current Dutch
 /// auction parameters for each slot.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(from = "RawGossipPriorityAuctionStatus")]
 pub struct GossipPriorityAuctionStatus {
     /// Previous-cycle winners' signer addresses (index = slot id), or `None` if
@@ -3184,11 +3515,11 @@ pub enum VaultRelationshipType {
 #[serde(rename_all = "camelCase")]
 pub struct VaultPortfolio {
     /// Historical account values as (timestamp_ms, value) pairs
-    pub account_value_history: Vec<(u64, String)>,
+    pub account_value_history: Vec<(u64, Decimal)>,
     /// Historical PnL values as (timestamp_ms, value) pairs
-    pub pnl_history: Vec<(u64, String)>,
+    pub pnl_history: Vec<(u64, Decimal)>,
     /// Volume for the period
-    pub vlm: String,
+    pub vlm: Decimal,
 }
 
 /// State of a user as a vault follower.
@@ -3310,7 +3641,7 @@ pub struct SubAccount {
 /// Spot trading state for an account.
 ///
 /// Contains the spot balances for an account.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpotState {
     /// List of spot balances
@@ -3443,7 +3774,7 @@ pub struct CandleSnapshotRequest {
 /// Info endpoint request types.
 ///
 /// Used for querying various types of information from the API.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(tag = "type")]
 pub(super) enum InfoRequest {
@@ -3463,6 +3794,8 @@ pub(super) enum InfoRequest {
     },
     UserFills {
         user: Address,
+        #[serde(rename = "aggregateByTime", skip_serializing_if = "Option::is_none")]
+        aggregate_by_time: Option<bool>,
     },
     UserFillsByTime {
         user: Address,
@@ -3470,6 +3803,8 @@ pub(super) enum InfoRequest {
         start_time: u64,
         #[serde(rename = "endTime", skip_serializing_if = "Option::is_none")]
         end_time: Option<u64>,
+        #[serde(rename = "aggregateByTime", skip_serializing_if = "Option::is_none")]
+        aggregate_by_time: Option<bool>,
     },
     OrderStatus {
         user: Address,
@@ -3530,13 +3865,145 @@ pub(super) enum InfoRequest {
     /// Query gossip priority auction status.
     GossipPriorityAuctionStatus,
     /// Query account abstraction mode for a user.
-    AbstractionMode {
+    UserAbstraction {
         user: Address,
     },
     /// Check builder fee approval for a user.
     MaxBuilderFee {
         user: Address,
         builder: Address,
+    },
+    /// Combined perpetual metadata and asset contexts.
+    MetaAndAssetCtxs {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dex: Option<String>,
+    },
+    /// Combined spot metadata and asset contexts.
+    SpotMetaAndAssetCtxs,
+    /// User's rate limit usage.
+    UserRateLimit {
+        user: Address,
+    },
+    /// User's funding history.
+    UserFunding {
+        user: Address,
+        #[serde(rename = "startTime")]
+        start_time: u64,
+        #[serde(rename = "endTime", skip_serializing_if = "Option::is_none")]
+        end_time: Option<u64>,
+    },
+    /// User's non-funding ledger updates.
+    UserNonFundingLedgerUpdates {
+        user: Address,
+        #[serde(rename = "startTime")]
+        start_time: u64,
+        #[serde(rename = "endTime", skip_serializing_if = "Option::is_none")]
+        end_time: Option<u64>,
+    },
+    /// Predicted funding rates for all coins.
+    PredictedFundings,
+    /// Coins at open interest cap.
+    PerpsAtOpenInterestCap {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dex: Option<String>,
+    },
+    /// Perp deploy auction status.
+    PerpDeployAuctionStatus,
+    /// User leverage and trade-size limits for a specific asset (info endpoint).
+    ActiveAssetData {
+        user: Address,
+        coin: String,
+    },
+    /// OI caps and transfer limits for a HIP-3 DEX.
+    PerpDexLimits {
+        dex: String,
+    },
+    /// Total net deposit for a HIP-3 DEX.
+    PerpDexStatus {
+        dex: String,
+    },
+    /// All DEXs' meta + asset contexts.
+    AllPerpMetas,
+    /// Category and description for a coin.
+    PerpAnnotation {
+        coin: String,
+    },
+    /// All coin categories.
+    PerpCategories,
+    /// Concise coin annotations.
+    PerpConciseAnnotations,
+    /// Spot token deploy state for a user.
+    SpotDeployState {
+        user: Address,
+    },
+    /// Spot pair deploy auction status.
+    SpotPairDeployAuctionStatus,
+    /// Detailed token info by tokenId.
+    TokenDetails {
+        #[serde(rename = "tokenId")]
+        token_id: String,
+    },
+    /// Settled outcome market result.
+    SettledOutcome {
+        outcome: u64,
+    },
+    /// User portfolio performance.
+    Portfolio {
+        user: Address,
+    },
+    /// Referral state and rewards.
+    Referral {
+        user: Address,
+    },
+    /// List of approved builder addresses.
+    ApprovedBuilders {
+        user: Address,
+    },
+    /// User's staking delegations.
+    Delegations {
+        user: Address,
+    },
+    /// Delegation summary.
+    DelegatorSummary {
+        user: Address,
+    },
+    /// Delegation history.
+    DelegatorHistory {
+        user: Address,
+    },
+    /// Delegation rewards.
+    DelegatorRewards {
+        user: Address,
+    },
+    /// Borrow/lend user state.
+    BorrowLendUserState {
+        user: Address,
+    },
+    /// Reserve state for a specific token.
+    BorrowLendReserveState {
+        token: u32,
+    },
+    /// All borrow/lend reserve states.
+    AllBorrowLendReserveStates,
+    /// Aligned quote token info.
+    AlignedQuoteTokenInfo {
+        token: u32,
+    },
+    /// TWAP slice fills via info endpoint.
+    UserTwapSliceFills {
+        user: Address,
+    },
+    /// L2 order book snapshot.
+    L2Book {
+        coin: String,
+        #[serde(rename = "nSigFigs", skip_serializing_if = "Option::is_none")]
+        n_sig_figs: Option<u8>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mantissa: Option<u8>,
+    },
+    /// Simple open orders (non-frontend).
+    OpenOrders {
+        user: Address,
     },
 }
 
@@ -4439,6 +4906,535 @@ mod tests {
                     "Expected Incoming::UserEvents(UserEvent::Fills {{ .. }}), got {incoming:?}"
                 )
             }
+        }
+    }
+
+    mod info_request_serialization {
+        use super::*;
+        use alloy::primitives::address;
+        use either::Either;
+
+        const USER: Address = address!("0x0000000000000000000000000000000000001234");
+        const BUILDER: Address = address!("0x0000000000000000000000000000000000005678");
+
+        fn assert_json(req: InfoRequest, expected: serde_json::Value) {
+            let serialized = serde_json::to_value(&req).unwrap();
+            assert_eq!(serialized, expected, "InfoRequest::{req:?}");
+        }
+
+        #[test]
+        fn meta() {
+            assert_json(
+                InfoRequest::Meta { dex: None },
+                serde_json::json!({"type": "meta"}),
+            );
+            assert_json(
+                InfoRequest::Meta { dex: Some("HyperBTC".into()) },
+                serde_json::json!({"type": "meta", "dex": "HyperBTC"}),
+            );
+        }
+
+        #[test]
+        fn spot_meta() {
+            assert_json(
+                InfoRequest::SpotMeta,
+                serde_json::json!({"type": "spotMeta"}),
+            );
+        }
+
+        #[test]
+        fn perp_dexs() {
+            assert_json(
+                InfoRequest::PerpDexs,
+                serde_json::json!({"type": "perpDexs"}),
+            );
+        }
+
+        #[test]
+        fn frontend_open_orders() {
+            assert_json(
+                InfoRequest::FrontendOpenOrders { user: USER, dex: None },
+                serde_json::json!({"type": "frontendOpenOrders", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+            assert_json(
+                InfoRequest::FrontendOpenOrders { user: USER, dex: Some("HyperBTC".into()) },
+                serde_json::json!({"type": "frontendOpenOrders", "user": "0x0000000000000000000000000000000000001234", "dex": "HyperBTC"}),
+            );
+        }
+
+        #[test]
+        fn historical_orders() {
+            assert_json(
+                InfoRequest::HistoricalOrders { user: USER },
+                serde_json::json!({"type": "historicalOrders", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn user_fills() {
+            assert_json(
+                InfoRequest::UserFills { user: USER, aggregate_by_time: None },
+                serde_json::json!({"type": "userFills", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+            assert_json(
+                InfoRequest::UserFills { user: USER, aggregate_by_time: Some(true) },
+                serde_json::json!({"type": "userFills", "user": "0x0000000000000000000000000000000000001234", "aggregateByTime": true}),
+            );
+        }
+
+        #[test]
+        fn user_fills_by_time() {
+            assert_json(
+                InfoRequest::UserFillsByTime {
+                    user: USER, start_time: 1000, end_time: None, aggregate_by_time: None,
+                },
+                serde_json::json!({"type": "userFillsByTime", "user": "0x0000000000000000000000000000000000001234", "startTime": 1000}),
+            );
+            assert_json(
+                InfoRequest::UserFillsByTime {
+                    user: USER, start_time: 1000, end_time: Some(2000), aggregate_by_time: Some(true),
+                },
+                serde_json::json!({"type": "userFillsByTime", "user": "0x0000000000000000000000000000000000001234", "startTime": 1000, "endTime": 2000, "aggregateByTime": true}),
+            );
+        }
+
+        #[test]
+        fn order_status() {
+            assert_json(
+                InfoRequest::OrderStatus { user: USER, oid: Either::Left(42) },
+                serde_json::json!({"type": "orderStatus", "user": "0x0000000000000000000000000000000000001234", "oid": 42}),
+            );
+        }
+
+        #[test]
+        fn spot_clearinghouse_state() {
+            assert_json(
+                InfoRequest::SpotClearinghouseState { user: USER },
+                serde_json::json!({"type": "spotClearinghouseState", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn clearinghouse_state() {
+            assert_json(
+                InfoRequest::ClearinghouseState { user: USER, dex: None },
+                serde_json::json!({"type": "clearinghouseState", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+            assert_json(
+                InfoRequest::ClearinghouseState { user: USER, dex: Some("HyperBTC".into()) },
+                serde_json::json!({"type": "clearinghouseState", "user": "0x0000000000000000000000000000000000001234", "dex": "HyperBTC"}),
+            );
+        }
+
+        #[test]
+        fn all_mids() {
+            assert_json(
+                InfoRequest::AllMids { dex: None },
+                serde_json::json!({"type": "allMids"}),
+            );
+            assert_json(
+                InfoRequest::AllMids { dex: Some("HyperBTC".into()) },
+                serde_json::json!({"type": "allMids", "dex": "HyperBTC"}),
+            );
+        }
+
+        #[test]
+        fn candle_snapshot() {
+            assert_json(
+                InfoRequest::CandleSnapshot {
+                    req: CandleSnapshotRequest {
+                        coin: "BTC".into(),
+                        interval: CandleInterval::FifteenMinutes,
+                        start_time: 1000,
+                        end_time: 2000,
+                    },
+                },
+                serde_json::json!({"type": "candleSnapshot", "req": {"coin": "BTC", "interval": "15m", "startTime": 1000, "endTime": 2000}}),
+            );
+        }
+
+        #[test]
+        fn user_to_multi_sig_signers() {
+            assert_json(
+                InfoRequest::UserToMultiSigSigners { user: USER },
+                serde_json::json!({"type": "userToMultiSigSigners", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn extra_agents() {
+            assert_json(
+                InfoRequest::ExtraAgents { user: USER },
+                serde_json::json!({"type": "extraAgents", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn funding_history() {
+            assert_json(
+                InfoRequest::FundingHistory { coin: "BTC".into(), start_time: 1000, end_time: None },
+                serde_json::json!({"type": "fundingHistory", "coin": "BTC", "startTime": 1000}),
+            );
+            assert_json(
+                InfoRequest::FundingHistory { coin: "ETH".into(), start_time: 1000, end_time: Some(2000) },
+                serde_json::json!({"type": "fundingHistory", "coin": "ETH", "startTime": 1000, "endTime": 2000}),
+            );
+        }
+
+        #[test]
+        fn vault_details() {
+            assert_json(
+                InfoRequest::VaultDetails { vault_address: USER, user: None },
+                serde_json::json!({"type": "vaultDetails", "vaultAddress": "0x0000000000000000000000000000000000001234"}),
+            );
+            assert_json(
+                InfoRequest::VaultDetails { vault_address: USER, user: Some(BUILDER) },
+                serde_json::json!({"type": "vaultDetails", "vaultAddress": "0x0000000000000000000000000000000000001234", "user": "0x0000000000000000000000000000000000005678"}),
+            );
+        }
+
+        #[test]
+        fn user_vault_equities() {
+            assert_json(
+                InfoRequest::UserVaultEquities { user: USER },
+                serde_json::json!({"type": "userVaultEquities", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn user_role() {
+            assert_json(
+                InfoRequest::UserRole { user: USER },
+                serde_json::json!({"type": "userRole", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn sub_accounts() {
+            assert_json(
+                InfoRequest::SubAccounts { user: USER },
+                serde_json::json!({"type": "subAccounts", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn user_fees() {
+            assert_json(
+                InfoRequest::UserFees { user: USER },
+                serde_json::json!({"type": "userFees", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn outcome_meta() {
+            assert_json(
+                InfoRequest::OutcomeMeta,
+                serde_json::json!({"type": "outcomeMeta"}),
+            );
+        }
+
+        #[test]
+        fn gossip_priority_auction_status() {
+            assert_json(
+                InfoRequest::GossipPriorityAuctionStatus,
+                serde_json::json!({"type": "gossipPriorityAuctionStatus"}),
+            );
+        }
+
+        #[test]
+        fn user_abstraction() {
+            assert_json(
+                InfoRequest::UserAbstraction { user: USER },
+                serde_json::json!({"type": "userAbstraction", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn max_builder_fee() {
+            assert_json(
+                InfoRequest::MaxBuilderFee { user: USER, builder: BUILDER },
+                serde_json::json!({"type": "maxBuilderFee", "user": "0x0000000000000000000000000000000000001234", "builder": "0x0000000000000000000000000000000000005678"}),
+            );
+        }
+
+        #[test]
+        fn meta_and_asset_ctxs() {
+            assert_json(
+                InfoRequest::MetaAndAssetCtxs { dex: None },
+                serde_json::json!({"type": "metaAndAssetCtxs"}),
+            );
+            assert_json(
+                InfoRequest::MetaAndAssetCtxs { dex: Some("HyperBTC".into()) },
+                serde_json::json!({"type": "metaAndAssetCtxs", "dex": "HyperBTC"}),
+            );
+        }
+
+        #[test]
+        fn spot_meta_and_asset_ctxs() {
+            assert_json(
+                InfoRequest::SpotMetaAndAssetCtxs,
+                serde_json::json!({"type": "spotMetaAndAssetCtxs"}),
+            );
+        }
+
+        #[test]
+        fn user_rate_limit() {
+            assert_json(
+                InfoRequest::UserRateLimit { user: USER },
+                serde_json::json!({"type": "userRateLimit", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn user_funding() {
+            assert_json(
+                InfoRequest::UserFunding { user: USER, start_time: 1000, end_time: None },
+                serde_json::json!({"type": "userFunding", "user": "0x0000000000000000000000000000000000001234", "startTime": 1000}),
+            );
+            assert_json(
+                InfoRequest::UserFunding { user: USER, start_time: 1000, end_time: Some(2000) },
+                serde_json::json!({"type": "userFunding", "user": "0x0000000000000000000000000000000000001234", "startTime": 1000, "endTime": 2000}),
+            );
+        }
+
+        #[test]
+        fn user_non_funding_ledger_updates() {
+            assert_json(
+                InfoRequest::UserNonFundingLedgerUpdates { user: USER, start_time: 1000, end_time: None },
+                serde_json::json!({"type": "userNonFundingLedgerUpdates", "user": "0x0000000000000000000000000000000000001234", "startTime": 1000}),
+            );
+        }
+
+        #[test]
+        fn predicted_fundings() {
+            assert_json(
+                InfoRequest::PredictedFundings,
+                serde_json::json!({"type": "predictedFundings"}),
+            );
+        }
+
+        #[test]
+        fn perps_at_open_interest_cap() {
+            assert_json(
+                InfoRequest::PerpsAtOpenInterestCap { dex: None },
+                serde_json::json!({"type": "perpsAtOpenInterestCap"}),
+            );
+            assert_json(
+                InfoRequest::PerpsAtOpenInterestCap { dex: Some("HyperBTC".into()) },
+                serde_json::json!({"type": "perpsAtOpenInterestCap", "dex": "HyperBTC"}),
+            );
+        }
+
+        #[test]
+        fn perp_deploy_auction_status() {
+            assert_json(
+                InfoRequest::PerpDeployAuctionStatus,
+                serde_json::json!({"type": "perpDeployAuctionStatus"}),
+            );
+        }
+
+        #[test]
+        fn active_asset_data() {
+            assert_json(
+                InfoRequest::ActiveAssetData { user: USER, coin: "BTC".into() },
+                serde_json::json!({"type": "activeAssetData", "user": "0x0000000000000000000000000000000000001234", "coin": "BTC"}),
+            );
+        }
+
+        #[test]
+        fn perp_dex_limits() {
+            assert_json(
+                InfoRequest::PerpDexLimits { dex: "HyperBTC".into() },
+                serde_json::json!({"type": "perpDexLimits", "dex": "HyperBTC"}),
+            );
+        }
+
+        #[test]
+        fn perp_dex_status() {
+            assert_json(
+                InfoRequest::PerpDexStatus { dex: "HyperBTC".into() },
+                serde_json::json!({"type": "perpDexStatus", "dex": "HyperBTC"}),
+            );
+        }
+
+        #[test]
+        fn all_perp_metas() {
+            assert_json(
+                InfoRequest::AllPerpMetas,
+                serde_json::json!({"type": "allPerpMetas"}),
+            );
+        }
+
+        #[test]
+        fn perp_annotation() {
+            assert_json(
+                InfoRequest::PerpAnnotation { coin: "BTC".into() },
+                serde_json::json!({"type": "perpAnnotation", "coin": "BTC"}),
+            );
+        }
+
+        #[test]
+        fn perp_categories() {
+            assert_json(
+                InfoRequest::PerpCategories,
+                serde_json::json!({"type": "perpCategories"}),
+            );
+        }
+
+        #[test]
+        fn perp_concise_annotations() {
+            assert_json(
+                InfoRequest::PerpConciseAnnotations,
+                serde_json::json!({"type": "perpConciseAnnotations"}),
+            );
+        }
+
+        #[test]
+        fn spot_deploy_state() {
+            assert_json(
+                InfoRequest::SpotDeployState { user: USER },
+                serde_json::json!({"type": "spotDeployState", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn spot_pair_deploy_auction_status() {
+            assert_json(
+                InfoRequest::SpotPairDeployAuctionStatus,
+                serde_json::json!({"type": "spotPairDeployAuctionStatus"}),
+            );
+        }
+
+        #[test]
+        fn token_details() {
+            assert_json(
+                InfoRequest::TokenDetails { token_id: "0xc4bf3f870c0e9465323c0b6ed28096c2".into() },
+                serde_json::json!({"type": "tokenDetails", "tokenId": "0xc4bf3f870c0e9465323c0b6ed28096c2"}),
+            );
+        }
+
+        #[test]
+        fn settled_outcome() {
+            assert_json(
+                InfoRequest::SettledOutcome { outcome: 1273 },
+                serde_json::json!({"type": "settledOutcome", "outcome": 1273}),
+            );
+        }
+
+        #[test]
+        fn portfolio() {
+            assert_json(
+                InfoRequest::Portfolio { user: USER },
+                serde_json::json!({"type": "portfolio", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn referral() {
+            assert_json(
+                InfoRequest::Referral { user: USER },
+                serde_json::json!({"type": "referral", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn approved_builders() {
+            assert_json(
+                InfoRequest::ApprovedBuilders { user: USER },
+                serde_json::json!({"type": "approvedBuilders", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn delegations() {
+            assert_json(
+                InfoRequest::Delegations { user: USER },
+                serde_json::json!({"type": "delegations", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn delegator_summary() {
+            assert_json(
+                InfoRequest::DelegatorSummary { user: USER },
+                serde_json::json!({"type": "delegatorSummary", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn delegator_history() {
+            assert_json(
+                InfoRequest::DelegatorHistory { user: USER },
+                serde_json::json!({"type": "delegatorHistory", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn delegator_rewards() {
+            assert_json(
+                InfoRequest::DelegatorRewards { user: USER },
+                serde_json::json!({"type": "delegatorRewards", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn borrow_lend_user_state() {
+            assert_json(
+                InfoRequest::BorrowLendUserState { user: USER },
+                serde_json::json!({"type": "borrowLendUserState", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn borrow_lend_reserve_state() {
+            assert_json(
+                InfoRequest::BorrowLendReserveState { token: 1 },
+                serde_json::json!({"type": "borrowLendReserveState", "token": 1}),
+            );
+        }
+
+        #[test]
+        fn all_borrow_lend_reserve_states() {
+            assert_json(
+                InfoRequest::AllBorrowLendReserveStates,
+                serde_json::json!({"type": "allBorrowLendReserveStates"}),
+            );
+        }
+
+        #[test]
+        fn aligned_quote_token_info() {
+            assert_json(
+                InfoRequest::AlignedQuoteTokenInfo { token: 5 },
+                serde_json::json!({"type": "alignedQuoteTokenInfo", "token": 5}),
+            );
+        }
+
+        #[test]
+        fn user_twap_slice_fills() {
+            assert_json(
+                InfoRequest::UserTwapSliceFills { user: USER },
+                serde_json::json!({"type": "userTwapSliceFills", "user": "0x0000000000000000000000000000000000001234"}),
+            );
+        }
+
+        #[test]
+        fn l2_book() {
+            assert_json(
+                InfoRequest::L2Book { coin: "BTC".into(), n_sig_figs: None, mantissa: None },
+                serde_json::json!({"type": "l2Book", "coin": "BTC"}),
+            );
+            assert_json(
+                InfoRequest::L2Book { coin: "ETH".into(), n_sig_figs: Some(5), mantissa: Some(2) },
+                serde_json::json!({"type": "l2Book", "coin": "ETH", "nSigFigs": 5, "mantissa": 2}),
+            );
+        }
+
+        #[test]
+        fn open_orders() {
+            assert_json(
+                InfoRequest::OpenOrders { user: USER },
+                serde_json::json!({"type": "openOrders", "user": "0x0000000000000000000000000000000000001234"}),
+            );
         }
     }
 }

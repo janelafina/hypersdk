@@ -10,6 +10,7 @@ mod prio;
 mod send;
 mod subscribe;
 mod to_multisig;
+mod twap;
 mod utils;
 mod vault;
 
@@ -27,6 +28,7 @@ use prio::PrioCmd;
 use send::SendCmd;
 use subscribe::SubscribeCmd;
 use to_multisig::ToMultiSigCmd;
+use twap::TwapCmd;
 use vault::VaultCmd;
 
 /// Main CLI structure for hypecli - A command-line interface for Hyperliquid.
@@ -86,6 +88,8 @@ enum Command {
     /// Gossip priority auction: query status or place a bid
     #[command(subcommand)]
     Prio(PrioCmd),
+    /// Execute a stealth TWAP as independent market orders
+    Twap(TwapCmd),
 }
 
 impl Command {
@@ -108,6 +112,7 @@ impl Command {
             Self::Positions(cmd) => cmd.run().await,
             Self::Orders(cmd) => cmd.run().await,
             Self::Prio(cmd) => cmd.run().await,
+            Self::Twap(cmd) => cmd.run().await,
         }
     }
 }
@@ -175,7 +180,7 @@ Commands that modify state (orders, transfers, etc.) require authentication via 
   --keystore <NAME>     Foundry keystore name (located in ~/.foundry/keystores/)
   --password <PASS>     Keystore password (prompted if not provided)
 
-Note: Ledger hardware wallets are supported for multi-sig operations but NOT for
+Note: Ledger and Trezor hardware wallets are supported for multi-sig operations but NOT for
 order placement/cancellation (which require synchronous signing).
 
 ASSET NAME FORMATS
@@ -628,7 +633,7 @@ Workflow 8: Stream HIP3 DEX Candle Data as JSON
 ERROR HANDLING
 --------------
 Common error scenarios:
-  - "Order operations require a private key or keystore" - Ledger not supported for orders
+  - "Order operations require a private key or keystore" - Ledger/Trezor not supported for orders
   - "keystore doesn't exist" - Check ~/.foundry/keystores/ for available keystores
   - "CLOID must be exactly 16 bytes" - Ensure CLOID is 32 hex characters
   - "Perpetual market 'X' not found" - Use `hypecli perps` to list valid market names

@@ -2,7 +2,7 @@
 //!
 //! This module provides helper functions for:
 //! - Creating gossip network topics from multi-sig addresses
-//! - Finding and loading signers (private keys, keystores, Ledger)
+//! - Finding and loading signers (private keys, keystores, Ledger, Trezor)
 //! - Starting gossip nodes for peer-to-peer communication
 //! - Signing multi-sig actions
 //! - Parsing unified asset name formats
@@ -13,18 +13,19 @@
 use std::path::PathBuf;
 use std::{env::home_dir, str::FromStr};
 
-use alloy::signers::{self, Signer, ledger::LedgerSigner};
+use alloy::signers::{self, Signer, ledger::LedgerSigner, trezor::TrezorSigner};
 use anyhow::Context;
 use clap::ValueEnum;
 use hypersdk::{Address, hypercore::PrivateKeySigner};
-use strsim::levenshtein;
 use iroh::{
     Endpoint, SecretKey,
-    discovery::{dns::DnsDiscovery, mdns::MdnsDiscovery},
+    address_lookup::{dns::DnsAddressLookup, mdns::MdnsAddressLookup, pkarr::PkarrPublisher},
+    endpoint::presets::Empty,
 };
 use iroh_tickets::endpoint::EndpointTicket;
+use strsim::levenshtein;
 
-use hypersdk::hypercore::{HttpClient, PerpMarket, SpotMarket};
+use hypersdk::hypercore::{HttpClient, PerpMarket, PriceTick, SpotMarket};
 
 use crate::SignerArgs;
 
@@ -66,11 +67,11 @@ pub struct QueryArgs {
     /// Filter by status (open, filled, canceled, all)
     #[arg(long, default_value = "all")]
     pub status: String,
-    
+
     /// Output format
     #[arg(long, default_value = "pretty")]
     pub format: OutputFormat,
-    
+
     /// Limit number of results
     #[arg(long, default_value = "100")]
     pub limit: usize,
@@ -88,7 +89,7 @@ pub fn make_key(_signer: &impl Signer) -> SecretKey {
     // let mut address_bytes = [0u8; 32];
     // address_bytes[0..20].copy_from_slice(&public_address[..]);
     // SecretKey::from_bytes(&address_bytes)
-    SecretKey::generate(&mut rand_09::rng())
+    SecretKey::generate()
 }
 
 /// Starts a gossip node for peer-to-peer multi-sig coordination.
@@ -116,11 +117,12 @@ pub async fn start_gossip(
     key: iroh::SecretKey,
     wait_online: bool,
 ) -> anyhow::Result<(Endpoint, EndpointTicket)> {
-    let endpoint = Endpoint::builder()
+    let endpoint = Endpoint::builder(Empty)
         .secret_key(key)
         .relay_mode(iroh::RelayMode::Default)
-        .discovery(DnsDiscovery::n0_dns())
-        .discovery(MdnsDiscovery::builder().advertise(true))
+        .address_lookup(DnsAddressLookup::n0_dns())
+        .address_lookup(PkarrPublisher::n0_dns())
+        .address_lookup(MdnsAddressLookup::builder().advertise(true))
         .bind()
         .await?;
 
@@ -173,7 +175,7 @@ pub fn find_signer_sync(cmd: &SignerArgs) -> anyhow::Result<PrivateKeySigner> {
         PrivateKeySigner::decrypt_keystore(keypath, password).context("decrypt_keystore")
     } else {
         Err(anyhow::anyhow!(
-            "This operation requires a private key or keystore (Ledger not supported)"
+            "This operation requires a private key or keystore (Ledger/Trezor not supported)"
         ))
     }
 }
@@ -184,8 +186,9 @@ pub fn find_signer_sync(cmd: &SignerArgs) -> anyhow::Result<PrivateKeySigner> {
 /// 1. Private key (if provided via `--private-key`)
 /// 2. Foundry keystore (if provided via `--keystore`)
 /// 3. Ledger hardware wallet (scans first 10 derivation paths)
+/// 4. Trezor hardware wallet (scans first 10 derivation paths)
 ///
-/// For Ledger devices, the function searches through derivation paths
+/// For hardware wallets, the function searches through derivation paths
 /// until it finds one that matches an address in `searching_for`.
 ///
 /// # Arguments
@@ -202,7 +205,7 @@ pub fn find_signer_sync(cmd: &SignerArgs) -> anyhow::Result<PrivateKeySigner> {
 /// Returns an error if:
 /// - Private key is invalid
 /// - Keystore file not found or password incorrect
-/// - No matching Ledger key found in first 10 paths
+/// - No matching Ledger/Trezor key found in first 10 paths
 /// - No signer source provided
 pub async fn find_signer(
     cmd: &SignerArgs,
@@ -242,8 +245,126 @@ pub async fn find_signer(
                 }
             }
         }
-        Err(anyhow::anyhow!("unable to find matching key in ledger"))
+        for i in 0..10 {
+            if let Ok(trezor) =
+                TrezorSigner::new(signers::trezor::HDPath::TrezorLive(i), Some(1)).await
+            {
+                if let Some(filter_by) = filter_by {
+                    if filter_by.contains(&trezor.address()) {
+                        return Ok(Box::new(trezor) as Box<_>);
+                    }
+                } else {
+                    return Ok(Box::new(trezor) as Box<_>);
+                }
+            }
+        }
+        Err(anyhow::anyhow!(
+            "unable to find matching key in ledger or trezor"
+        ))
     }
+}
+
+/// Finds and loads all matching signers from available sources.
+///
+/// Unlike `find_signer` which returns the first match, this function
+/// collects all signers whose addresses are in `filter_by`. This allows
+/// a single CLI invocation to contribute multiple signatures (e.g. when
+/// a user controls several authorized hardware wallet keys).
+///
+/// Sources checked: private key, keystore, Ledger (10 paths), Trezor (10 paths).
+pub async fn find_signers(
+    cmd: &SignerArgs,
+    filter_by: &[Address],
+) -> anyhow::Result<Vec<Box<dyn Signer + Send + Sync + 'static>>> {
+    let mut signers: Vec<Box<dyn Signer + Send + Sync + 'static>> = Vec::new();
+    let mut found: Vec<Address> = Vec::new();
+
+    if let Some(key) = cmd.private_key.as_ref() {
+        let signer = PrivateKeySigner::from_str(key)?;
+        if filter_by.contains(&signer.address()) && !found.contains(&signer.address()) {
+            found.push(signer.address());
+            signers.push(Box::new(signer));
+        }
+    }
+
+    if let Some(filename) = cmd.keystore.as_ref() {
+        let home_dir = home_dir().ok_or(anyhow::anyhow!("unable to locate home dir"))?;
+        let keypath = home_dir.join(".foundry").join("keystores").join(filename);
+        if keypath.exists() {
+            let password = cmd
+                .password
+                .clone()
+                .or_else(|| {
+                    rpassword::prompt_password(format!(
+                        "{} password: ",
+                        keypath.as_os_str().to_str().unwrap()
+                    ))
+                    .ok()
+                })
+                .ok_or(anyhow::anyhow!("keystores require a password!"))?;
+            if let Ok(signer) = PrivateKeySigner::decrypt_keystore(keypath, password)
+                && filter_by.contains(&signer.address())
+                && !found.contains(&signer.address())
+            {
+                found.push(signer.address());
+                signers.push(Box::new(signer));
+            }
+        }
+    }
+
+    for i in 0..10 {
+        if let Ok(ledger) = LedgerSigner::new(signers::ledger::HDPath::LedgerLive(i), Some(1)).await
+            && filter_by.contains(&ledger.address())
+            && !found.contains(&ledger.address())
+        {
+            found.push(ledger.address());
+            signers.push(Box::new(ledger));
+        }
+    }
+
+    for i in 0..10 {
+        if let Ok(trezor) = TrezorSigner::new(signers::trezor::HDPath::TrezorLive(i), Some(1)).await
+            && filter_by.contains(&trezor.address())
+            && !found.contains(&trezor.address())
+        {
+            found.push(trezor.address());
+            signers.push(Box::new(trezor));
+        }
+    }
+
+    anyhow::ensure!(!signers.is_empty(), "no matching signers found");
+    Ok(signers)
+}
+
+/// Scans for hardware wallet signers (Ledger + Trezor) that haven't been found yet.
+///
+/// Used for the "swap device and rescan" flow during multisig signing.
+/// Returns any new signers whose addresses are in `filter_by` but not in `already_found`.
+pub async fn scan_hw_signers(
+    filter_by: &[Address],
+    already_found: &[Address],
+) -> Vec<Box<dyn Signer + Send + Sync + 'static>> {
+    let mut signers: Vec<Box<dyn Signer + Send + Sync + 'static>> = Vec::new();
+
+    for i in 0..10 {
+        if let Ok(ledger) = LedgerSigner::new(signers::ledger::HDPath::LedgerLive(i), Some(1)).await
+            && filter_by.contains(&ledger.address())
+            && !already_found.contains(&ledger.address())
+        {
+            signers.push(Box::new(ledger));
+        }
+    }
+
+    for i in 0..10 {
+        if let Ok(trezor) = TrezorSigner::new(signers::trezor::HDPath::TrezorLive(i), Some(1)).await
+            && filter_by.contains(&trezor.address())
+            && !already_found.contains(&trezor.address())
+        {
+            signers.push(Box::new(trezor));
+        }
+    }
+
+    signers
 }
 
 /// Parsed asset specification.
@@ -315,7 +436,8 @@ pub async fn resolve_asset(client: &HttpClient, asset: &str) -> anyhow::Result<u
         }
         AssetSpec::Spot(base, quote) => {
             let spots = client.spot().await?;
-            find_spot_index(&spots, base, quote)
+            let pos = find_spot_index(&spots, base, quote)?;
+            Ok(spots[pos].index)
         }
         AssetSpec::Hip3Perp(dex_name, symbol) => {
             // First get the DEX
@@ -332,6 +454,53 @@ pub async fn resolve_asset(client: &HttpClient, asset: &str) -> anyhow::Result<u
     }
 }
 
+/// Resolved market metadata for order placement.
+pub struct ResolvedMarket {
+    pub index: usize,
+    pub tick: PriceTick,
+    pub sz_decimals: u32,
+}
+
+/// Resolve an asset name to its index, price tick, and size decimals.
+pub async fn resolve_market(client: &HttpClient, asset: &str) -> anyhow::Result<ResolvedMarket> {
+    let spec = parse_asset_spec(asset)?;
+
+    match spec {
+        AssetSpec::Perp(symbol) => {
+            let perps = client.perps().await?;
+            let idx = find_perp_index(&perps, symbol)?;
+            Ok(ResolvedMarket {
+                index: idx,
+                tick: perps[idx].table,
+                sz_decimals: perps[idx].sz_decimals as u32,
+            })
+        }
+        AssetSpec::Spot(base, quote) => {
+            let spots = client.spot().await?;
+            let pos = find_spot_index(&spots, base, quote)?;
+            Ok(ResolvedMarket {
+                index: spots[pos].index,
+                tick: spots[pos].table,
+                sz_decimals: spots[pos].base().sz_decimals as u32,
+            })
+        }
+        AssetSpec::Hip3Perp(dex_name, symbol) => {
+            let dexs = client.perp_dexes().await?;
+            let dex = dexs
+                .iter()
+                .find(|d| d.name().eq_ignore_ascii_case(dex_name))
+                .ok_or_else(|| anyhow::anyhow!("HIP3 DEX '{}' not found", dex_name))?;
+            let perps = client.perps_from(dex.clone()).await?;
+            let idx = find_perp_index_with_dex(&perps, symbol, Some(dex_name))?;
+            Ok(ResolvedMarket {
+                index: idx,
+                tick: perps[idx].table,
+                sz_decimals: perps[idx].sz_decimals as u32,
+            })
+        }
+    }
+}
+
 /// Find a perpetual market index by symbol with fuzzy matching suggestions.
 fn find_perp_index(perps: &[PerpMarket], symbol: &str) -> anyhow::Result<usize> {
     // First try exact match
@@ -341,7 +510,7 @@ fn find_perp_index(perps: &[PerpMarket], symbol: &str) -> anyhow::Result<usize> 
     {
         return Ok(index);
     }
-    
+
     // Extract all candidate symbols for fuzzy matching
     let candidates: Vec<&str> = perps
         .iter()
@@ -354,10 +523,10 @@ fn find_perp_index(perps: &[PerpMarket], symbol: &str) -> anyhow::Result<usize> 
             }
         })
         .collect();
-    
+
     // Find similar symbols
     let similar = find_similar_symbols(&candidates, symbol, 3);
-    
+
     if similar.is_empty() {
         Err(anyhow::anyhow!(
             "Perpetual market '{}' not found. Use 'hypecli perps' to list available markets.",
@@ -380,10 +549,13 @@ fn find_perp_index_with_dex(
     _dex_name: Option<&str>,
 ) -> anyhow::Result<usize> {
     // First try exact match
-    if let Some(index) = perps.iter().position(|p| perp_name_matches(&p.name, symbol)) {
+    if let Some(index) = perps
+        .iter()
+        .position(|p| perp_name_matches(&p.name, symbol))
+    {
         return Ok(index);
     }
-    
+
     // Extract all candidate symbols for fuzzy matching
     let candidates: Vec<&str> = perps
         .iter()
@@ -395,10 +567,10 @@ fn find_perp_index_with_dex(
             }
         })
         .collect();
-    
+
     // Find similar symbols
     let similar = find_similar_symbols(&candidates, symbol, 3);
-    
+
     if similar.is_empty() {
         Err(anyhow::anyhow!(
             "Perpetual market '{}' not found. Use 'hypecli perps' to list available markets.",
@@ -438,11 +610,11 @@ fn find_spot_index(spots: &[SpotMarket], base: &str, quote: &str) -> anyhow::Res
     }) {
         return Ok(index);
     }
-    
+
     // Try fuzzy match on base
     let base_candidates: Vec<&str> = spots.iter().map(|s| s.base().name.as_str()).collect();
     let similar_base = find_similar_symbols(&base_candidates, base, 3);
-    
+
     if !similar_base.is_empty() {
         let suggestions = similar_base.join(", ");
         return Err(anyhow::anyhow!(
@@ -451,11 +623,11 @@ fn find_spot_index(spots: &[SpotMarket], base: &str, quote: &str) -> anyhow::Res
             suggestions
         ));
     }
-    
+
     // Try fuzzy match on quote
     let quote_candidates: Vec<&str> = spots.iter().map(|s| s.quote().name.as_str()).collect();
     let similar_quote = find_similar_symbols(&quote_candidates, quote, 3);
-    
+
     if !similar_quote.is_empty() {
         let suggestions = similar_quote.join(", ");
         return Err(anyhow::anyhow!(
@@ -464,7 +636,7 @@ fn find_spot_index(spots: &[SpotMarket], base: &str, quote: &str) -> anyhow::Res
             suggestions
         ));
     }
-    
+
     Err(anyhow::anyhow!(
         "Spot market '{}/{}' not found. Use 'hypecli spot' to list available markets.",
         base,

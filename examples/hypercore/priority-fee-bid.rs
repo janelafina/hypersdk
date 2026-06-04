@@ -47,12 +47,8 @@ fn print_auction_status(status: &GossipPriorityAuctionStatus) {
         let elapsed = now.saturating_sub(slot.start_time_seconds);
         let progress = (elapsed as f64 / slot.duration_seconds as f64).clamp(0.0, 1.0);
 
-        let start: Decimal = slot.start_gas.parse().unwrap_or_default();
-        let end: Decimal = slot
-            .end_gas
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(start);
+        let start: Decimal = slot.start_gas;
+        let end: Decimal = slot.end_gas.unwrap_or(start);
         let current_price =
             start - (start - end) * Decimal::from_f64_retain(progress).unwrap_or_default();
 
@@ -67,13 +63,14 @@ fn print_auction_status(status: &GossipPriorityAuctionStatus) {
             "(no bid)".to_string()
         };
 
+        let end_str = slot
+            .end_gas
+            .map(|d| format!("{:.4}", d))
+            .unwrap_or_else(|| "-".to_string());
+
         println!(
             "{:<6} {:>12} {:>14} {:>12} {:>10}s",
-            i,
-            slot.start_gas,
-            current_str,
-            slot.end_gas.as_deref().unwrap_or("-"),
-            secs_left
+            i, slot.start_gas, current_str, end_str, secs_left
         );
     }
 }

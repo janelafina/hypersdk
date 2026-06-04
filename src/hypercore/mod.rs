@@ -108,7 +108,7 @@ use anyhow::Context;
 use chrono::Utc;
 use either::Either;
 /// Re-export error types.
-pub use error::{ActionError, Error};
+pub use error::{ActionError, ApiError};
 use reqwest::IntoUrl;
 use rust_decimal::{Decimal, MathematicalOps, RoundingStrategy, prelude::ToPrimitive};
 use serde::{Deserialize, Serialize};
@@ -1523,15 +1523,18 @@ pub async fn spot_markets(
     let spot_tokens: Vec<_> = data.tokens.iter().cloned().map(SpotToken::from).collect();
 
     for item in data.universe {
-        let (_, base) = spot_tokens
+        // Match by the token's `index` field, NOT its position in the `tokens`
+        // array. HyperCore's token indices are not contiguous (delistings /
+        // reindexing leave gaps), so position-based lookup panics/errors once a
+        // universe market references a token whose index exceeds the array length
+        // (e.g. mainnet market `@367` -> base token index 479 in a 464-entry array).
+        let base = spot_tokens
             .iter()
-            .enumerate()
-            .find(|(index, _)| *index as u32 == item.tokens[0])
+            .find(|t| t.index == item.tokens[0])
             .context("base token index not found")?;
-        let (_, quote) = spot_tokens
+        let quote = spot_tokens
             .iter()
-            .enumerate()
-            .find(|(index, _)| *index as u32 == item.tokens[1])
+            .find(|t| t.index == item.tokens[1])
             .context("quote token index not found")?;
 
         markets.push(SpotMarket {
