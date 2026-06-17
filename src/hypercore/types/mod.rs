@@ -24,6 +24,7 @@
 //! - [`Bbo`]: Best bid and offer updates
 //! - [`UserEvent`]: Funding, liquidation, and non-user-cancel events
 //! - [`ActiveAssetData`]: User leverage and trade-size limits
+//! - [`FastAssetCtx`]: Low-latency mark/mid price updates
 //! - [`UserTwapSliceFills`]: TWAP slice fills for a user
 //! - [`UserTwapHistory`]: TWAP lifecycle updates for a user
 //!
@@ -70,6 +71,7 @@ use std::{
     collections::HashMap,
     fmt,
     hash::{Hash, Hasher},
+    io::Read,
     time::Duration,
 };
 
@@ -79,6 +81,8 @@ use alloy::{
     signers::k256::ecdsa::RecoveryId,
     sol_types::eip712_domain,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use flate2::read::DeflateDecoder;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error, ser::SerializeMap};
 use serde_with::{DisplayFromStr, serde_as};
@@ -118,6 +122,19 @@ where
     decimal_from_json_value(&value).map_err(serde::de::Error::custom)
 }
 
+fn deserialize_option_decimal_from_any<'de, D>(deserializer: D) -> Result<Option<Decimal>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => decimal_from_json_value(&value)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
 fn deserialize_optional_decimal_pair_from_any<'de, D>(
     deserializer: D,
 ) -> Result<Option<[Decimal; 2]>, D::Error>
@@ -137,6 +154,24 @@ where
             ]))
         }
     }
+}
+
+fn deserialize_fast_asset_ctxs<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, FastAssetCtx>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let encoded = String::deserialize(deserializer)?;
+    let compressed = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(serde::de::Error::custom)?;
+    let mut decoder = DeflateDecoder::new(compressed.as_slice());
+    let mut json = String::new();
+    decoder
+        .read_to_string(&mut json)
+        .map_err(serde::de::Error::custom)?;
+    serde_json::from_str(&json).map_err(serde::de::Error::custom)
 }
 
 /// Domain for Core mainnet EIP‑712 signing.
@@ -267,6 +302,7 @@ pub enum Outgoing {
 /// | [`L2Book`](Self::L2Book) | [`Incoming::L2Book`] | Order book updates |
 /// | [`Candle`](Self::Candle) | [`Incoming::Candle`] | Candlestick (OHLCV) data |
 /// | [`AllMids`](Self::AllMids) | [`Incoming::AllMids`] | Mid prices for all markets |
+/// | [`FastAssetCtxs`](Self::FastAssetCtxs) | [`Incoming::FastAssetCtxs`] | Low-latency mark/mid price updates |
 ///
 /// # User-Specific Subscriptions
 ///
@@ -412,6 +448,9 @@ pub enum Subscription {
     /// Asset contexts across all DEXs
     #[display("allDexsAssetCtxs")]
     AllDexsAssetCtxs,
+    /// Low-latency mark/mid price updates for all assets
+    #[display("fastAssetCtxs")]
+    FastAssetCtxs,
     /// Outcome market metadata updates
     #[display("outcomeMetaUpdates")]
     OutcomeMetaUpdates,
@@ -436,6 +475,7 @@ pub enum Subscription {
 /// - **UserTwapSliceFills**: TWAP slice fill updates for a user
 /// - **UserTwapHistory**: TWAP status history updates for a user
 /// - **ActiveAssetData**: User leverage and limits for a specific perp asset
+/// - **FastAssetCtxs**: Low-latency mark/mid price updates for all assets
 /// - **WebData2**: Frontend-style aggregate user snapshot
 /// - **Ping/Pong**: Heartbeat messages
 ///
@@ -576,6 +616,13 @@ pub enum Incoming {
     AllDexsAssetCtxs {
         ctxs: Vec<(String, Vec<PerpAssetCtx>)>,
     },
+    /// Low-latency mark/mid price updates for all assets.
+    ///
+    /// Hyperliquid sends this channel as base64-encoded raw-DEFLATE JSON. The SDK
+    /// decodes it before exposing the map.
+    FastAssetCtxs(
+        #[serde(deserialize_with = "deserialize_fast_asset_ctxs")] HashMap<String, FastAssetCtx>,
+    ),
     /// Outcome market metadata updates
     OutcomeMetaUpdates(serde_json::Value),
     /// Server heartbeat ping
@@ -2956,6 +3003,21 @@ pub struct SpotAssetContext {
     pub day_base_vlm: Decimal,
 }
 
+/// Low-latency asset context from the `fastAssetCtxs` WebSocket subscription.
+///
+/// The first message is a snapshot. Later messages contain only assets and
+/// fields that changed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FastAssetCtx {
+    /// Latest mark price when present in the update.
+    #[serde(default, deserialize_with = "deserialize_option_decimal_from_any")]
+    pub mark_px: Option<Decimal>,
+    /// Latest mid price when present. Hyperliquid may explicitly send `null`.
+    #[serde(default, deserialize_with = "deserialize_option_decimal_from_any")]
+    pub mid_px: Option<Decimal>,
+}
+
 /// User balance.
 ///
 /// Represents the balance of a specific token in a user's account.
@@ -4189,6 +4251,16 @@ mod tests {
     }
 
     #[test]
+    fn test_fast_asset_ctxs_subscription() {
+        let sub = Subscription::FastAssetCtxs;
+
+        let json = serde_json::to_value(&sub).unwrap();
+        assert_eq!(json, serde_json::json!({ "type": "fastAssetCtxs" }));
+        let deserialized: Subscription = serde_json::from_value(json).unwrap();
+        assert_eq!(sub, deserialized);
+    }
+
+    #[test]
     fn test_user_stream_subscription_roundtrip() {
         let user: Address = "0x1234567890abcdef1234567890abcdef12345678"
             .parse()
@@ -4239,6 +4311,38 @@ mod tests {
             }
             _ => assert!(false, "Expected Incoming::Candle"),
         }
+    }
+
+    #[test]
+    fn test_incoming_fast_asset_ctxs_decodes_payload() {
+        let json = r#"{
+            "channel":"fastAssetCtxs",
+            "data":"q1ZyCnFWsqpWyk0syg6oULJSsjQ3NTDQM1Wq1VFyDfFAkTI2MzXQMwJLVVRWWfmFuTiiyBuamOoZKdXWAgA="
+        }"#;
+
+        let incoming: Incoming = serde_json::from_str(json).unwrap();
+        match incoming {
+            Incoming::FastAssetCtxs(ctxs) => {
+                assert_eq!(ctxs.len(), 3);
+                assert_eq!(ctxs["BTC"].mark_px.unwrap().to_string(), "97500.5");
+                assert_eq!(ctxs["ETH"].mark_px.unwrap().to_string(), "3650.25");
+                assert_eq!(ctxs["xyz:NVDA"].mark_px.unwrap().to_string(), "145.2");
+                assert_eq!(ctxs["BTC"].mid_px, None);
+            }
+            _ => assert!(false, "Expected Incoming::FastAssetCtxs"),
+        }
+    }
+
+    #[test]
+    fn test_fast_asset_ctx_accepts_numbers_and_nulls() {
+        let ctx: FastAssetCtx = serde_json::from_value(serde_json::json!({
+            "markPx": 97500.5,
+            "midPx": null
+        }))
+        .unwrap();
+
+        assert_eq!(ctx.mark_px.unwrap().to_string(), "97500.5");
+        assert_eq!(ctx.mid_px, None);
     }
 
     #[test]
