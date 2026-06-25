@@ -62,7 +62,7 @@ use crate::hypercore::{
         Action, ActionRequest, ApproveAgent, ApproveBuilderFee, ConvertToMultiSigUser,
         GossipPriorityBid, Hip3LiquidatorTransferAction, OkResponse, Response, SignersConfig,
         TokenDelegateAction, TwapOrderParams, UpdateIsolatedMargin, UpdateLeverage,
-        UsdClassTransferAction, VaultTransfer, Withdraw3Action,
+        UsdClassTransferAction, UserOutcomeAction, VaultTransfer, Withdraw3Action,
     },
     mainnet_url, testnet_url,
     types::{
@@ -2531,6 +2531,111 @@ impl Client {
         });
         let req = action.sign_sync(signer, nonce, vault_address, expires_after, self.chain)?;
         self.send(req).await?.into_default()
+    }
+
+    /// Submit a HIP-4 outcome action (`userOutcome`): split, merge, or negate outcome tokens.
+    ///
+    /// See [`UserOutcomeAction`] for the available operations and their semantics, or use the
+    /// convenience methods [`split_outcome`](Self::split_outcome),
+    /// [`merge_outcome`](Self::merge_outcome), [`merge_outcome_question`](Self::merge_outcome_question),
+    /// and [`negate_outcome`](Self::negate_outcome).
+    pub fn user_outcome<S: SignerSync>(
+        &self,
+        signer: &S,
+        action: UserOutcomeAction,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> impl Future<Output = Result<()>> + Send + 'static {
+        let future = self.sign_and_send_sync(
+            signer,
+            Action::UserOutcome(action),
+            nonce,
+            vault_address,
+            expires_after,
+        );
+        async move { future.await?.into_default() }
+    }
+
+    /// Split `amount` of the quote token into one share of each side of `outcome`.
+    pub fn split_outcome<S: SignerSync>(
+        &self,
+        signer: &S,
+        outcome: u32,
+        amount: Decimal,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> impl Future<Output = Result<()>> + Send + 'static {
+        self.user_outcome(
+            signer,
+            UserOutcomeAction::split(outcome, amount),
+            nonce,
+            vault_address,
+            expires_after,
+        )
+    }
+
+    /// Merge matching shares of `outcome` back into the quote token.
+    ///
+    /// `amount = None` merges the maximum available.
+    pub fn merge_outcome<S: SignerSync>(
+        &self,
+        signer: &S,
+        outcome: u32,
+        amount: Option<Decimal>,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> impl Future<Output = Result<()>> + Send + 'static {
+        self.user_outcome(
+            signer,
+            UserOutcomeAction::merge(outcome, amount),
+            nonce,
+            vault_address,
+            expires_after,
+        )
+    }
+
+    /// Merge a full set of mutually-exclusive outcomes within `question` back into the quote token.
+    ///
+    /// `amount = None` merges the maximum available.
+    pub fn merge_outcome_question<S: SignerSync>(
+        &self,
+        signer: &S,
+        question: u32,
+        amount: Option<Decimal>,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> impl Future<Output = Result<()>> + Send + 'static {
+        self.user_outcome(
+            signer,
+            UserOutcomeAction::merge_question(question, amount),
+            nonce,
+            vault_address,
+            expires_after,
+        )
+    }
+
+    /// Negate `outcome` within `question`, converting its shares into the complementary basket.
+    pub fn negate_outcome<S: SignerSync>(
+        &self,
+        signer: &S,
+        question: u32,
+        outcome: u32,
+        amount: Decimal,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> impl Future<Output = Result<()>> + Send + 'static {
+        self.user_outcome(
+            signer,
+            UserOutcomeAction::negate(question, outcome, amount),
+            nonce,
+            vault_address,
+            expires_after,
+        )
     }
 }
 
