@@ -49,23 +49,20 @@ use alloy::{
     signers::{Signer, SignerSync},
 };
 use anyhow::{Context, Result, anyhow};
-
-use super::ApiError;
 use chrono::{DateTime, Utc};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::Deserialize;
 use url::Url;
 
-use super::{AssetTarget, signing::*};
+use super::{ApiError, AssetTarget, signing::*};
 use crate::hypercore::{
     ActionError, ApiAgent, Builder, CandleInterval, Chain, Cloid, Dex, GossipPriorityAuctionStatus,
     Market, MultiSigConfig, OidOrCloid, OutcomeMeta, PerpMarket, Signature, SpotMarket, SpotToken,
     api::{
         Action, ActionRequest, ApproveAgent, ApproveBuilderFee, ConvertToMultiSigUser,
         GossipPriorityBid, Hip3LiquidatorTransferAction, OkResponse, Response, SignersConfig,
-        TokenDelegateAction, TwapOrderParams, UsdClassTransferAction, UpdateIsolatedMargin,
-        UpdateLeverage,
-        VaultTransfer, Withdraw3Action,
+        TokenDelegateAction, TwapOrderParams, UpdateIsolatedMargin, UpdateLeverage,
+        UsdClassTransferAction, VaultTransfer, Withdraw3Action,
     },
     mainnet_url, testnet_url,
     types::{
@@ -406,8 +403,7 @@ impl Client {
             return Err(ApiError(format!("[{label}] HTTP {status} body={text}")).into());
         }
 
-        serde_json::from_str(&text)
-            .with_context(|| format!("[{label}] body={text}"))
+        serde_json::from_str(&text).with_context(|| format!("[{label}] body={text}"))
     }
 
     /// Returns all open orders for a user.
@@ -1651,9 +1647,7 @@ impl Client {
         let future =
             self.sign_and_send_sync(signer, send.into_action(self.chain), nonce, None, None);
 
-        async move {
-            future.await?.into_default()
-        }
+        async move { future.await?.into_default() }
     }
 
     /// Agent-signed send asset.
@@ -1672,9 +1666,7 @@ impl Client {
     ) -> impl Future<Output = Result<()>> + Send + 'static {
         let future = self.sign_and_send_sync(signer, send.into_action(), nonce, None, None);
 
-        async move {
-            future.await?.into_default()
-        }
+        async move { future.await?.into_default() }
     }
 
     /// Send a spot token to another address (spot-to-spot transfer).
@@ -1698,9 +1690,7 @@ impl Client {
         let future =
             self.sign_and_send_sync(signer, send.into_action(self.chain), nonce, None, None);
 
-        async move {
-            future.await?.into_default()
-        }
+        async move { future.await?.into_default() }
     }
 
     /// Update leverage for a perpetual asset.
@@ -2092,8 +2082,7 @@ impl Client {
                 return Err(ApiError(format!("HTTP {status} body={text}")).into());
             }
 
-            let parsed = serde_json::from_str(&text)
-                .with_context(|| format!("body={text}"))?;
+            let parsed = serde_json::from_str(&text).with_context(|| format!("body={text}"))?;
 
             Ok(parsed)
         }
@@ -2145,17 +2134,13 @@ impl Client {
             return Err(ApiError(format!("HTTP {status} body={text}")).into());
         }
 
-        let parsed = serde_json::from_str(&text)
-            .with_context(|| format!("body={text}"))?;
+        let parsed = serde_json::from_str(&text).with_context(|| format!("body={text}"))?;
 
         Ok(parsed)
     }
 
     /// Returns combined perpetual metadata and asset contexts.
-    pub async fn meta_and_asset_ctxs(
-        &self,
-        dex: Option<String>,
-    ) -> Result<serde_json::Value> {
+    pub async fn meta_and_asset_ctxs(&self, dex: Option<String>) -> Result<serde_json::Value> {
         let req = InfoRequest::MetaAndAssetCtxs { dex };
         self.send_info_request("meta_and_asset_ctxs", &req).await
     }
@@ -2213,10 +2198,7 @@ impl Client {
     }
 
     /// Returns coins at open interest cap.
-    pub async fn perps_at_open_interest_cap(
-        &self,
-        dex: Option<String>,
-    ) -> Result<Vec<String>> {
+    pub async fn perps_at_open_interest_cap(&self, dex: Option<String>) -> Result<Vec<String>> {
         let req = InfoRequest::PerpsAtOpenInterestCap { dex };
         self.send_info_request("perps_at_open_interest_cap", &req)
             .await
@@ -2230,11 +2212,7 @@ impl Client {
     }
 
     /// Returns user leverage and trade-size limits for a specific asset.
-    pub async fn active_asset_data(
-        &self,
-        user: Address,
-        coin: String,
-    ) -> Result<ActiveAssetData> {
+    pub async fn active_asset_data(&self, user: Address, coin: String) -> Result<ActiveAssetData> {
         let req = InfoRequest::ActiveAssetData { user, coin };
         self.send_info_request("active_asset_data", &req).await
     }
@@ -2346,8 +2324,7 @@ impl Client {
     /// Returns borrow/lend user state.
     pub async fn borrow_lend_user_state(&self, user: Address) -> Result<serde_json::Value> {
         let req = InfoRequest::BorrowLendUserState { user };
-        self.send_info_request("borrow_lend_user_state", &req)
-            .await
+        self.send_info_request("borrow_lend_user_state", &req).await
     }
 
     /// Returns borrow/lend reserve state for a specific token.
@@ -2410,13 +2387,7 @@ impl Client {
         expires_after: Option<DateTime<Utc>>,
     ) -> Result<Response> {
         let action = Action::TwapOrder { twap: params };
-        let req = action.sign_sync(
-            signer,
-            nonce,
-            vault_address,
-            expires_after,
-            self.chain,
-        )?;
+        let req = action.sign_sync(signer, nonce, vault_address, expires_after, self.chain)?;
         self.send(req).await
     }
 
@@ -2430,14 +2401,11 @@ impl Client {
         vault_address: Option<Address>,
         expires_after: Option<DateTime<Utc>>,
     ) -> Result<Response> {
-        let action = Action::TwapCancel { a: asset, t: twap_id };
-        let req = action.sign_sync(
-            signer,
-            nonce,
-            vault_address,
-            expires_after,
-            self.chain,
-        )?;
+        let action = Action::TwapCancel {
+            a: asset,
+            t: twap_id,
+        };
+        let req = action.sign_sync(signer, nonce, vault_address, expires_after, self.chain)?;
         self.send(req).await
     }
 
@@ -2458,13 +2426,7 @@ impl Client {
             amount,
             time: nonce,
         });
-        let req = action.sign_sync(
-            signer,
-            nonce,
-            vault_address,
-            expires_after,
-            self.chain,
-        )?;
+        let req = action.sign_sync(signer, nonce, vault_address, expires_after, self.chain)?;
         self.send(req).await?.into_default()
     }
 
@@ -2485,13 +2447,7 @@ impl Client {
             to_perp,
             nonce,
         });
-        let req = action.sign_sync(
-            signer,
-            nonce,
-            vault_address,
-            expires_after,
-            self.chain,
-        )?;
+        let req = action.sign_sync(signer, nonce, vault_address, expires_after, self.chain)?;
         self.send(req).await?.into_default()
     }
 
@@ -2505,13 +2461,7 @@ impl Client {
         expires_after: Option<DateTime<Utc>>,
     ) -> Result<()> {
         let action = Action::CDeposit { wei };
-        let req = action.sign_sync(
-            signer,
-            nonce,
-            vault_address,
-            expires_after,
-            self.chain,
-        )?;
+        let req = action.sign_sync(signer, nonce, vault_address, expires_after, self.chain)?;
         self.send(req).await?.into_default()
     }
 
@@ -2525,13 +2475,7 @@ impl Client {
         expires_after: Option<DateTime<Utc>>,
     ) -> Result<()> {
         let action = Action::CWithdraw { wei };
-        let req = action.sign_sync(
-            signer,
-            nonce,
-            vault_address,
-            expires_after,
-            self.chain,
-        )?;
+        let req = action.sign_sync(signer, nonce, vault_address, expires_after, self.chain)?;
         self.send(req).await?.into_default()
     }
 
@@ -2551,13 +2495,7 @@ impl Client {
             is_undelegate,
             wei,
         });
-        let req = action.sign_sync(
-            signer,
-            nonce,
-            vault_address,
-            expires_after,
-            self.chain,
-        )?;
+        let req = action.sign_sync(signer, nonce, vault_address, expires_after, self.chain)?;
         self.send(req).await?.into_default()
     }
 
@@ -2571,13 +2509,7 @@ impl Client {
         expires_after: Option<DateTime<Utc>>,
     ) -> Result<()> {
         let action = Action::ReserveRequestWeight { weight };
-        let req = action.sign_sync(
-            signer,
-            nonce,
-            vault_address,
-            expires_after,
-            self.chain,
-        )?;
+        let req = action.sign_sync(signer, nonce, vault_address, expires_after, self.chain)?;
         self.send(req).await?.into_default()
     }
 
@@ -2597,13 +2529,7 @@ impl Client {
             ntl,
             is_deposit,
         });
-        let req = action.sign_sync(
-            signer,
-            nonce,
-            vault_address,
-            expires_after,
-            self.chain,
-        )?;
+        let req = action.sign_sync(signer, nonce, vault_address, expires_after, self.chain)?;
         self.send(req).await?.into_default()
     }
 }

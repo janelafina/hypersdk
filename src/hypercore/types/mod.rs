@@ -5051,9 +5051,10 @@ mod tests {
     }
 
     mod info_request_serialization {
-        use super::*;
         use alloy::primitives::address;
         use either::Either;
+
+        use super::*;
 
         const USER: Address = address!("0x0000000000000000000000000000000000001234");
         const BUILDER: Address = address!("0x0000000000000000000000000000000000005678");
