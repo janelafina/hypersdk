@@ -189,20 +189,41 @@ impl futures::Stream for Stream {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         while let Some(frame) = ready!(this.stream.poll_next_unpin(cx)) {
-            if frame.opcode() == OpCode::Text {
-                match serde_json::from_slice(frame.payload()) {
+            match frame.opcode() {
+                OpCode::Text => match serde_json::from_slice(frame.payload()) {
                     Ok(ok) => {
                         return Poll::Ready(Some(ok));
                     }
                     Err(err) => {
                         log::warn!("unable to parse: {}: {:?}", frame.as_str(), err);
                     }
+                },
+                // Hyperliquid rotates long-lived connections, closing them with
+                // `1000 Normal` and the reason "Expired". That is routine, not an error:
+                // the stream ends here and the caller's reconnect loop takes over.
+                OpCode::Close => {
+                    let reason = match frame.close_reason() {
+                        Ok(reason) => reason.unwrap_or_default(),
+                        Err(_) => "<invalid utf-8>",
+                    };
+                    match frame.close_code() {
+                        Some(code) => {
+                            log::info!("Hyperliquid closed the connection: {code:?} ({reason})");
+                        }
+                        None => {
+                            log::info!("Hyperliquid closed the connection (no status code)");
+                        }
+                    }
                 }
-            } else {
-                log::warn!(
-                    "Hyperliquid sent a binary msg? {data:?}",
-                    data = frame.payload()
-                );
+                OpCode::Ping | OpCode::Pong | OpCode::Continuation => {
+                    log::trace!("ignoring {opcode:?} frame", opcode = frame.opcode());
+                }
+                OpCode::Binary => {
+                    log::warn!(
+                        "Hyperliquid sent a binary msg? {data:?}",
+                        data = frame.payload()
+                    );
+                }
             }
         }
 
