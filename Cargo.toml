@@ -200,6 +200,10 @@ name = "dwellir_l4_snapshot_smoke"
 path = "examples/hypercore/dwellir_l4_snapshot_smoke.rs"
 
 [[example]]
+name = "dwellir_l4_book_snapshot_smoke"
+path = "examples/hypercore/dwellir_l4_book_snapshot_smoke.rs"
+
+[[example]]
 name = "dwellir_fills_smoke"
 path = "examples/hypercore/dwellir_fills_smoke.rs"
 
@@ -245,6 +249,7 @@ alloy = { version = "1", features = ["pubsub", "signer-keystore"], default-featu
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15.7"
 indicatif = "0.18.3"
+l4-book = { git = "https://github.com/janelafina/l4-book", rev = "5da2de1100475e69590eb4db700831a474da7d24", features = ["dwellir"] }
 rpassword = "7.4.0"
 simple_logger = "5"
 tokio = { version = "1", features = ["full"] }
