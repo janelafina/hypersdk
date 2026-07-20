@@ -19,9 +19,10 @@ use clap::ValueEnum;
 use hypersdk::{Address, hypercore::PrivateKeySigner};
 use iroh::{
     Endpoint, SecretKey,
-    address_lookup::{dns::DnsAddressLookup, mdns::MdnsAddressLookup, pkarr::PkarrPublisher},
+    address_lookup::{dns::DnsAddressLookup, pkarr::PkarrPublisher},
     endpoint::presets::Empty,
 };
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 use iroh_tickets::endpoint::EndpointTicket;
 use strsim::levenshtein;
 
@@ -84,7 +85,7 @@ pub fn keystore_dir() -> anyhow::Result<PathBuf> {
 }
 
 /// Generates a random secret key for the gossip node.
-pub fn make_key(_signer: &impl Signer) -> SecretKey {
+pub fn make_key(_signer: &(impl Signer + ?Sized)) -> SecretKey {
     // let public_address = signer.address();
     // let mut address_bytes = [0u8; 32];
     // address_bytes[0..20].copy_from_slice(&public_address[..]);

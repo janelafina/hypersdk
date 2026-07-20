@@ -1,7 +1,7 @@
 ## Package metadata
 [package]
 name = "hypersdk"
-version = "0.2.13"
+version = "0.2.14"
 edition = "2024"
 authors = ["Dario <dario@infinitefieldtrading.com>"]
 license = "MPL-2.0"
@@ -64,7 +64,7 @@ name = "list-markets"
 path = "examples/hypercore/list-markets.rs"
 
 [[example]]
-name = "list_tokens"
+name = "list-tokens"
 path = "examples/hypercore/list-tokens.rs"
 
 [[example]]
@@ -218,12 +218,14 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 ## Runtime dependencies
 [dependencies]
-alloy = { version = "1.5.2", default-features = false, features = ["contract", "eip712", "getrandom", "providers", "reqwest", "reqwest-rustls-tls", "rpc", "rpc-types", "signer-local", "signers", "sol-types"] }
+alloy = { version = "2", default-features = false, features = ["contract", "eip712", "getrandom", "providers", "reqwest", "reqwest-rustls-tls", "rpc", "rpc-types", "signer-local", "signers", "sol-types"] }
 anyhow = "1"
+base64 = "0.22"
 thiserror = "2"
 const-hex = { version = "1.17", features = ["serde"] }
 derive_more = { version = "2", features = ["display", "is_variant"] }
 either = { version = "1", features = ["serde"] }
+flate2 = "1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 log = "0.4"
 reqwest = { version = "0.13", features = ["json"] }
@@ -245,7 +247,7 @@ tonic = { version = "0.12", default-features = false, features = ["channel", "co
 
 ## Development and test dependencies
 [dev-dependencies]
-alloy = { version = "1", features = ["pubsub", "signer-keystore"], default-features = false }
+alloy = { version = "2", features = ["pubsub", "signer-keystore"], default-features = false }
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15.7"
 indicatif = "0.18.3"

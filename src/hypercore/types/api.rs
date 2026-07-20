@@ -85,6 +85,10 @@ pub enum Action {
     SpotSend(SpotSendAction),
     /// EVM user modify.
     EvmUserModify {
+        // rename_all = "camelCase" on the enum applies to variant names but not
+        // struct variant fields when using #[serde(tag = "type")]. Explicit rename
+        // fixes both the JSON body and the msgpack signing hash.
+        #[serde(rename = "usingBigBlocks")]
         using_big_blocks: bool,
     },
     ApproveAgent(ApproveAgent),
@@ -165,6 +169,9 @@ pub enum Action {
     #[from(skip)]
     #[serde(rename = "hip3LiquidatorTransfer")]
     Hip3LiquidatorTransfer(Hip3LiquidatorTransferAction),
+    /// HIP-4 outcome token split/merge/negate.
+    #[from(skip)]
+    UserOutcome(UserOutcomeAction),
 }
 
 impl Action {
@@ -286,7 +293,8 @@ impl Action {
             | Action::CDeposit { .. }
             | Action::CWithdraw { .. }
             | Action::ReserveRequestWeight { .. }
-            | Action::Hip3LiquidatorTransfer(_) => {
+            | Action::Hip3LiquidatorTransfer(_)
+            | Action::UserOutcome(_) => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
                 let agent = solidity::Agent {
                     source: if chain.is_mainnet() { "a" } else { "b" }.to_string(),
@@ -414,7 +422,8 @@ impl Action {
             | Action::CDeposit { .. }
             | Action::CWithdraw { .. }
             | Action::ReserveRequestWeight { .. }
-            | Action::Hip3LiquidatorTransfer(_) => {
+            | Action::Hip3LiquidatorTransfer(_)
+            | Action::UserOutcome(_) => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
                 let agent = solidity::Agent {
                     source: if chain.is_mainnet() { "a" } else { "b" }.to_string(),
@@ -539,7 +548,8 @@ impl Action {
             | Action::CDeposit { .. }
             | Action::CWithdraw { .. }
             | Action::ReserveRequestWeight { .. }
-            | Action::Hip3LiquidatorTransfer(_) => {
+            | Action::Hip3LiquidatorTransfer(_)
+            | Action::UserOutcome(_) => {
                 let expires_after =
                     maybe_expires_after.map(|after| after.timestamp_millis() as u64);
                 let connection_id = self
@@ -1359,6 +1369,138 @@ pub struct Hip3LiquidatorTransferAction {
     pub is_deposit: bool,
 }
 
+/// HIP-4 outcome token action (`userOutcome`).
+///
+/// Outcome markets are fully collateralized binary contracts. The quote token (e.g. USDH)
+/// can be split into one share of each side of an outcome, and matching shares can be merged
+/// back into the quote token. Exactly one of the optional operations should be set; the others
+/// are omitted from the request.
+///
+/// - [`split_outcome`](Self::split_outcome): burn `amount` of the quote token, mint `amount` of
+///   each side (e.g. 1 YES + 1 NO) of `outcome`.
+/// - [`merge_outcome`](Self::merge_outcome): burn `amount` of each side of `outcome`, returning
+///   `amount` of the quote token. `amount = None` merges the maximum available.
+/// - [`merge_question`](Self::merge_question): merge a full set of mutually-exclusive outcomes
+///   within a categorical `question` back into the quote token. `amount = None` merges the max.
+/// - [`negate_outcome`](Self::negate_outcome): within a categorical `question`, convert shares of
+///   one `outcome` into shares of the complementary basket (the "No" of that outcome).
+///
+/// `outcome` and `question` are the integer IDs from the `outcomeMeta` info endpoint
+/// (see [`crate::hypercore::OutcomeInfo::outcome`] and [`crate::hypercore::OutcomeQuestion::question`]).
+///
+/// This is an L1 (agent-signable) action signed via the same msgpack + `Agent` wrapper used by
+/// orders and cancels.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/hyperliquid-improvement-proposals-hips/hip-4-outcome-markets>
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UserOutcomeAction {
+    /// Mint one share of each side of an outcome from the quote token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split_outcome: Option<SplitOutcome>,
+    /// Burn matching shares of an outcome back into the quote token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_outcome: Option<MergeOutcome>,
+    /// Merge a full set of outcomes within a question back into the quote token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_question: Option<MergeQuestion>,
+    /// Convert shares of one outcome into the complementary basket within a question.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub negate_outcome: Option<NegateOutcome>,
+}
+
+impl UserOutcomeAction {
+    /// Build a [`Self`] that splits the quote token into both sides of `outcome`.
+    #[must_use]
+    pub fn split(outcome: u32, amount: Decimal) -> Self {
+        Self {
+            split_outcome: Some(SplitOutcome { outcome, amount }),
+            ..Default::default()
+        }
+    }
+
+    /// Build a [`Self`] that merges both sides of `outcome` back into the quote token.
+    ///
+    /// `amount = None` merges the maximum available.
+    #[must_use]
+    pub fn merge(outcome: u32, amount: Option<Decimal>) -> Self {
+        Self {
+            merge_outcome: Some(MergeOutcome { outcome, amount }),
+            ..Default::default()
+        }
+    }
+
+    /// Build a [`Self`] that merges a full set of outcomes within `question`.
+    ///
+    /// `amount = None` merges the maximum available.
+    #[must_use]
+    pub fn merge_question(question: u32, amount: Option<Decimal>) -> Self {
+        Self {
+            merge_question: Some(MergeQuestion { question, amount }),
+            ..Default::default()
+        }
+    }
+
+    /// Build a [`Self`] that negates `outcome` within `question`.
+    #[must_use]
+    pub fn negate(question: u32, outcome: u32, amount: Decimal) -> Self {
+        Self {
+            negate_outcome: Some(NegateOutcome {
+                question,
+                outcome,
+                amount,
+            }),
+            ..Default::default()
+        }
+    }
+}
+
+/// Split the quote token into one share of each side of an outcome.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitOutcome {
+    /// Outcome ID from `outcomeMeta`.
+    pub outcome: u32,
+    /// Amount of the quote token to split.
+    #[serde(with = "rust_decimal::serde::str")]
+    pub amount: Decimal,
+}
+
+/// Merge matching shares of an outcome back into the quote token.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeOutcome {
+    /// Outcome ID from `outcomeMeta`.
+    pub outcome: u32,
+    /// Amount to merge, or `None` for the maximum available.
+    #[serde(default, with = "rust_decimal::serde::str_option")]
+    pub amount: Option<Decimal>,
+}
+
+/// Merge a full set of mutually-exclusive outcomes within a question.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeQuestion {
+    /// Question ID from `outcomeMeta`.
+    pub question: u32,
+    /// Amount to merge, or `None` for the maximum available.
+    #[serde(default, with = "rust_decimal::serde::str_option")]
+    pub amount: Option<Decimal>,
+}
+
+/// Convert shares of one outcome into the complementary basket within a question.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NegateOutcome {
+    /// Question ID from `outcomeMeta`.
+    pub question: u32,
+    /// Outcome ID to negate from `outcomeMeta`.
+    pub outcome: u32,
+    /// Amount to negate.
+    #[serde(with = "rust_decimal::serde::str")]
+    pub amount: Decimal,
+}
+
 #[cfg(test)]
 mod tests {
     use alloy::primitives::address;
@@ -1381,6 +1523,61 @@ mod tests {
             address,
             address!("0x5eCb62791B22A3108367c2A2024019Ee7eA88431")
         );
+    }
+
+    #[test]
+    fn user_outcome_serialization() {
+        use rust_decimal::dec;
+
+        // split: exactly one operation present, others omitted.
+        let action = Action::UserOutcome(UserOutcomeAction::split(20, dec!(10)));
+        let json = serde_json::to_string(&action).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"userOutcome","splitOutcome":{"outcome":20,"amount":"10"}}"#
+        );
+
+        // merge with explicit amount.
+        let action = Action::UserOutcome(UserOutcomeAction::merge(20, Some(dec!(5))));
+        let json = serde_json::to_string(&action).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"userOutcome","mergeOutcome":{"outcome":20,"amount":"5"}}"#
+        );
+
+        // merge with no amount => max (serialized as null).
+        let action = Action::UserOutcome(UserOutcomeAction::merge(20, None));
+        let json = serde_json::to_string(&action).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"userOutcome","mergeOutcome":{"outcome":20,"amount":null}}"#
+        );
+
+        // mergeQuestion.
+        let action = Action::UserOutcome(UserOutcomeAction::merge_question(3, Some(dec!(2))));
+        let json = serde_json::to_string(&action).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"userOutcome","mergeQuestion":{"question":3,"amount":"2"}}"#
+        );
+
+        // negate.
+        let action = Action::UserOutcome(UserOutcomeAction::negate(3, 20, dec!(1)));
+        let json = serde_json::to_string(&action).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"userOutcome","negateOutcome":{"question":3,"outcome":20,"amount":"1"}}"#
+        );
+
+        // Round-trip.
+        let deserialized: Action = serde_json::from_str(&json).unwrap();
+        let Action::UserOutcome(a) = deserialized else {
+            panic!("expected UserOutcome");
+        };
+        let neg = a.negate_outcome.unwrap();
+        assert_eq!(neg.question, 3);
+        assert_eq!(neg.outcome, 20);
+        assert_eq!(neg.amount, dec!(1));
     }
 
     #[test]

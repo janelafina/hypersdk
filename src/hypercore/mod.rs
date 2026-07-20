@@ -50,6 +50,7 @@
 //!     coin: "BTC".into(),
 //!     n_sig_figs: None,
 //!     mantissa: None,
+//!     fast: false,
 //! });
 //!
 //! while let Some(event) = ws.next().await {
@@ -800,7 +801,7 @@ impl PriceTick {
                 RoundingStrategy::ToNegativeInfinity
             }
         };
-        let rounded = price.round_dp_with_strategy(tick.scale(), strategy);
+        let rounded = (price / tick).round_dp_with_strategy(0, strategy) * tick;
         Some(rounded)
     }
 }
@@ -1848,14 +1849,14 @@ pub enum MarginMode {
     NoCross,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SpotTokens {
     universe: Vec<SpotUniverseItem>,
     tokens: Vec<Token>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SpotUniverseItem {
     // base and quote
@@ -1864,7 +1865,7 @@ struct SpotUniverseItem {
     index: usize,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Token {
     name: String,
@@ -1917,7 +1918,7 @@ impl From<Token> for SpotToken {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct EvmContract {
     address: Address,
