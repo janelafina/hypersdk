@@ -68,6 +68,21 @@ pub struct RawBlockFills {
     pub data: Vec<u8>,
 }
 
+/// Timestamp request for `GetOrderBookSnapshot`. Zero requests the latest
+/// provider snapshot.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub(crate) struct SnapshotTimestamp {
+    #[prost(int64, tag = "1")]
+    pub timestamp_ms: i64,
+}
+
+/// Raw gRPC snapshot response; `data` is provider JSON.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub(crate) struct RawOrderBookSnapshot {
+    #[prost(bytes = "vec", tag = "1")]
+    pub data: Vec<u8>,
+}
+
 // ---------------------------------------------------------------------------
 // Thin gRPC client for `HyperliquidL1Gateway/StreamFills`.
 // ---------------------------------------------------------------------------
@@ -102,6 +117,116 @@ impl HyperliquidL1GatewayClient {
             .server_streaming(request.into_request(), path, codec)
             .await
     }
+}
+
+#[derive(Clone)]
+struct SnapshotGatewayClient {
+    inner: Grpc<Channel>,
+}
+
+impl SnapshotGatewayClient {
+    fn new(channel: Channel) -> Self {
+        // Dwellir recommends 500 MiB for the all-market snapshot. Keep a hard
+        // ceiling so malformed/provider responses cannot grow without bound.
+        let inner = Grpc::new(channel).max_decoding_message_size(512 * 1024 * 1024);
+        Self { inner }
+    }
+
+    async fn get_orderbook_snapshot(
+        &mut self,
+        request: impl IntoRequest<SnapshotTimestamp>,
+    ) -> Result<Response<RawOrderBookSnapshot>, Status> {
+        self.inner.ready().await.map_err(|e| {
+            Status::new(
+                tonic::Code::Unknown,
+                format!("gateway service not ready: {e}"),
+            )
+        })?;
+        let codec: ProstCodec<SnapshotTimestamp, RawOrderBookSnapshot> = ProstCodec::default();
+        let path = PathAndQuery::from_static(
+            "/hyperliquid_l1_gateway.v2.HyperliquidL1Gateway/GetOrderBookSnapshot",
+        );
+        self.inner.unary(request.into_request(), path, codec).await
+    }
+
+    async fn get_block(
+        &mut self,
+        request: impl IntoRequest<Position>,
+    ) -> Result<Response<RawOrderBookSnapshot>, Status> {
+        self.inner.ready().await.map_err(|e| {
+            Status::new(
+                tonic::Code::Unknown,
+                format!("gateway service not ready: {e}"),
+            )
+        })?;
+        let codec: ProstCodec<Position, RawOrderBookSnapshot> = ProstCodec::default();
+        let path =
+            PathAndQuery::from_static("/hyperliquid_l1_gateway.v2.HyperliquidL1Gateway/GetBlock");
+        self.inner.unary(request.into_request(), path, codec).await
+    }
+}
+
+/// Failure from the transport/RPC layer of a one-shot snapshot request.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum SnapshotRpcError {
+    #[error("transport: {0}")]
+    Transport(#[source] anyhow::Error),
+    #[error("provider: {0}")]
+    Provider(#[source] Status),
+    #[error("invalid API key metadata: {0}")]
+    InvalidMetadata(String),
+}
+
+/// Opens an isolated channel, requests the latest all-market provider
+/// snapshot once, and closes the channel when this future completes or drops.
+pub(crate) async fn get_latest_orderbook_snapshot(
+    endpoint: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<u8>, SnapshotRpcError> {
+    let channel = build_channel(endpoint, Duration::from_secs(10))
+        .await
+        .map_err(SnapshotRpcError::Transport)?;
+    let mut client = SnapshotGatewayClient::new(channel);
+    let mut request = SnapshotTimestamp { timestamp_ms: 0 }.into_request();
+    if let Some(key) = api_key {
+        let value = MetadataValue::try_from(key)
+            .map_err(|err| SnapshotRpcError::InvalidMetadata(err.to_string()))?;
+        request.metadata_mut().insert("x-api-key", value);
+    }
+    let response = client
+        .get_orderbook_snapshot(request)
+        .await
+        .map_err(SnapshotRpcError::Provider)?;
+    Ok(response.into_inner().data)
+}
+
+/// Fetches node block data for one exact height on an isolated gRPC channel.
+pub(crate) async fn get_block_at_height(
+    endpoint: &str,
+    api_key: Option<&str>,
+    height: u64,
+) -> Result<Vec<u8>, SnapshotRpcError> {
+    let height = i64::try_from(height).map_err(|_| {
+        SnapshotRpcError::InvalidMetadata("block height exceeds provider i64 range".into())
+    })?;
+    let channel = build_channel(endpoint, Duration::from_secs(10))
+        .await
+        .map_err(SnapshotRpcError::Transport)?;
+    let mut client = SnapshotGatewayClient::new(channel);
+    let mut request = Position {
+        position: Some(position::Position::BlockHeight(height)),
+    }
+    .into_request();
+    if let Some(key) = api_key {
+        let value = MetadataValue::try_from(key)
+            .map_err(|err| SnapshotRpcError::InvalidMetadata(err.to_string()))?;
+        request.metadata_mut().insert("x-api-key", value);
+    }
+    let response = client
+        .get_block(request)
+        .await
+        .map_err(SnapshotRpcError::Provider)?;
+    Ok(response.into_inner().data)
 }
 
 // ---------------------------------------------------------------------------
@@ -284,7 +409,10 @@ async fn run(
     }
 }
 
-async fn build_channel(endpoint: &str, connect_timeout: Duration) -> Result<Channel, anyhow::Error> {
+pub(crate) async fn build_channel(
+    endpoint: &str,
+    connect_timeout: Duration,
+) -> Result<Channel, anyhow::Error> {
     // rustls 0.23 requires a process-level crypto provider. `install_default`
     // is a no-op (returns Err) if one is already set, so this is safe to call
     // on every reconnect and from library code.

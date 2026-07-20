@@ -5,6 +5,7 @@ use std::fmt;
 use alloy::primitives::{Address, B128};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Map, Value};
 
 use crate::hypercore::types::{Liquidation, Side, Trade};
 
@@ -57,6 +58,8 @@ pub enum DwellirIncoming {
     L4Book(L4Message),
     /// Real-time trades for a subscribed market.
     Trades(Vec<DwellirTrade>),
+    /// Provider-reported protocol error.
+    Error(String),
 }
 
 /// Dwellir trade payload normalized to the SDK's native trade shape.
@@ -76,8 +79,19 @@ pub struct L4Snapshot {
     pub coin: String,
     /// Hyperliquid block height at which the snapshot was taken.
     pub height: u64,
+    /// Provider/node timestamp for the complete state at `height`.
+    ///
+    /// Legacy Dwellir WebSocket snapshots omit this field. It is deliberately
+    /// optional here so the stream remains decodable; strict authoritative
+    /// capture resolves it through Dwellir `GetBlock` at this exact height and
+    /// returns `MissingExchangeTimestamp` if the node lookup also lacks time.
+    #[serde(default, alias = "timestamp", alias = "exchange_time_ms")]
+    pub time: Option<u64>,
     /// `[bids, asks]`.
     pub levels: [Vec<L4Order>; 2],
+    /// Correlation and protocol metadata supplied by the provider, when any.
+    #[serde(flatten)]
+    pub metadata: L4MessageMetadata,
 }
 
 impl L4Snapshot {
@@ -93,18 +107,18 @@ impl L4Snapshot {
 ///
 /// Field names match Dwellir's wire format, which is snake_case for this
 /// message (whereas the nested [`L4Order`] uses camelCase).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct L4Updates {
     /// Unix timestamp in milliseconds.
     pub time: u64,
     /// Hyperliquid block height.
     pub height: u64,
     /// Order status transitions that occurred in this block.
-    #[serde(default)]
     pub order_statuses: Vec<L4OrderStatus>,
     /// Per-order book mutations that occurred in this block.
-    #[serde(default)]
     pub book_diffs: Vec<L4BookDiff>,
+    /// Correlation and protocol metadata supplied by the provider, when any.
+    pub metadata: L4MessageMetadata,
 }
 
 /// Single order status transition (e.g. `open`, `filled`, `canceled`).
@@ -116,6 +130,8 @@ pub struct L4OrderStatus {
     pub user: Address,
     pub status: String,
     pub order: L4Order,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// Individual order record as it appears on the L4 book.
@@ -124,7 +140,7 @@ pub struct L4OrderStatus {
 /// emits `null` for them (in practice it happens deep inside large snapshots
 /// for fields like `triggerCondition`, `tif`, `orderType`, and `triggerPx`).
 /// Treat `None` as "not set / not applicable".
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct L4Order {
     /// Owner wallet. `None` inside `order_statuses.order` — the outer
@@ -133,10 +149,13 @@ pub struct L4Order {
     pub user: Option<Address>,
     pub coin: String,
     pub side: Side,
-    pub limit_px: Decimal,
-    pub sz: Decimal,
+    #[serde(rename = "limitPx", alias = "px")]
+    pub price: Decimal,
+    #[serde(rename = "sz", alias = "size")]
+    pub size: Decimal,
     pub oid: u64,
-    pub timestamp: u64,
+    #[serde(rename = "timestamp", alias = "timestampMs", default)]
+    pub timestamp_ms: Option<u64>,
     #[serde(default)]
     pub trigger_condition: Option<String>,
     pub is_trigger: bool,
@@ -149,7 +168,31 @@ pub struct L4Order {
     #[serde(default)]
     pub tif: Option<String>,
     #[serde(default)]
-    pub cloid: Option<B128>,
+    pub cloid: Option<String>,
+    /// Original order size, if the provider supplies it.
+    #[serde(rename = "origSz", default)]
+    pub original_size: Option<Decimal>,
+    /// Attached TP/SL child orders. Dwellir documents at most two levels and
+    /// currently emits empty `children` on child records.
+    #[serde(default)]
+    pub children: Vec<L4Order>,
+    /// Forward-compatible retention for provider fields added after this SDK.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl L4Order {
+    /// Backward-friendly name for Dwellir's `limitPx` wire field.
+    #[must_use]
+    pub fn limit_px(&self) -> Decimal {
+        self.price
+    }
+
+    /// Backward-friendly name for Dwellir's `sz` wire field.
+    #[must_use]
+    pub fn sz(&self) -> Decimal {
+        self.size
+    }
 }
 
 /// Mutation of a specific order's footprint on the book.
@@ -160,6 +203,108 @@ pub struct L4BookDiff {
     pub px: Decimal,
     pub coin: String,
     pub raw_book_diff: RawBookDiff,
+    /// Full order joined from the same update's order-status payload for a
+    /// `new` diff, or supplied directly by a future provider schema.
+    #[serde(default)]
+    pub order: Option<L4Order>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// Provider correlation fields retained on L4 snapshots and update batches.
+///
+/// `connection_id` is populated by the SDK when the provider does not expose a
+/// session identifier, so reconnect boundaries remain observable. Provider
+/// sequence/request identifiers are never synthesized.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct L4MessageMetadata {
+    #[serde(
+        default,
+        alias = "connection_id",
+        alias = "sessionId",
+        alias = "session_id"
+    )]
+    pub connection_id: Option<String>,
+    #[serde(default, alias = "subscription_id")]
+    pub subscription_id: Option<String>,
+    #[serde(
+        default,
+        alias = "sequence",
+        alias = "seq",
+        alias = "provider_sequence"
+    )]
+    pub provider_sequence: Option<u64>,
+    #[serde(default, alias = "request_id")]
+    pub request_id: Option<String>,
+    #[serde(
+        default,
+        alias = "protocol_version",
+        alias = "schemaVersion",
+        alias = "schema_version"
+    )]
+    pub protocol_version: Option<String>,
+    #[serde(
+        default,
+        alias = "checksum",
+        alias = "bookDigest",
+        alias = "book_digest"
+    )]
+    pub checksum: Option<String>,
+    /// Forward-compatible retention for new message-level provider fields.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl L4Message {
+    pub(crate) fn set_connection_id_if_missing(&mut self, connection_id: &str) {
+        let metadata = match self {
+            Self::Snapshot(snapshot) => &mut snapshot.metadata,
+            Self::Updates(updates) => &mut updates.metadata,
+        };
+        metadata
+            .connection_id
+            .get_or_insert_with(|| connection_id.to_owned());
+    }
+}
+
+impl<'de> Deserialize<'de> for L4Updates {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            time: u64,
+            height: u64,
+            #[serde(default)]
+            order_statuses: Vec<L4OrderStatus>,
+            #[serde(default)]
+            book_diffs: Vec<L4BookDiff>,
+            #[serde(flatten)]
+            metadata: L4MessageMetadata,
+        }
+
+        let mut wire = Wire::deserialize(deserializer)?;
+        for diff in &mut wire.book_diffs {
+            if diff.order.is_none() && matches!(diff.raw_book_diff, RawBookDiff::New { .. }) {
+                if let Some(status) = wire
+                    .order_statuses
+                    .iter()
+                    .find(|status| status.order.oid == diff.oid)
+                {
+                    let mut order = status.order.clone();
+                    order.user.get_or_insert(status.user);
+                    diff.order = Some(order);
+                }
+            }
+        }
+
+        Ok(Self {
+            time: wire.time,
+            height: wire.height,
+            order_statuses: wire.order_statuses,
+            book_diffs: wire.book_diffs,
+            metadata: wire.metadata,
+        })
+    }
 }
 
 /// What happened to the order referenced by an [`L4BookDiff`].
@@ -435,6 +580,8 @@ mod tests {
                 "Snapshot": {
                     "coin": "BTC",
                     "height": 854890775,
+                    "connectionId": "provider-session-1",
+                    "schemaVersion": "2",
                     "levels": [
                         [{
                             "user": "0xf9109ada2f73c62e9889b45453065f0d99260a2d",
@@ -465,6 +612,16 @@ mod tests {
         assert_eq!(snap.coin, "BTC");
         assert_eq!(snap.bids().len(), 1);
         assert_eq!(snap.asks().len(), 0);
+        assert_eq!(
+            snap.metadata.connection_id.as_deref(),
+            Some("provider-session-1")
+        );
+        assert_eq!(snap.metadata.protocol_version.as_deref(), Some("2"));
+        assert_eq!(snap.bids()[0].timestamp_ms, Some(1_767_878_782_721));
+        assert_eq!(
+            snap.bids()[0].cloid.as_deref(),
+            Some("0x4c4617dbd8b94d358285c5c6d5a43df3")
+        );
     }
 
     #[test]
@@ -475,6 +632,8 @@ mod tests {
                 "Updates": {
                     "time": 1,
                     "height": 2,
+                    "sequence": 3,
+                    "subscriptionId": "sub-1",
                     "order_statuses": [],
                     "book_diffs": [{
                         "user": "0xbc927e87d072dfac3693846a83fa6922cc6c5f2a",
@@ -490,7 +649,62 @@ mod tests {
         let DwellirIncoming::L4Book(L4Message::Updates(up)) = msg else {
             panic!("expected updates");
         };
-        assert!(matches!(up.book_diffs[0].raw_book_diff, RawBookDiff::Remove));
+        assert!(matches!(
+            up.book_diffs[0].raw_book_diff,
+            RawBookDiff::Remove
+        ));
+        assert_eq!(up.metadata.provider_sequence, Some(3));
+        assert_eq!(up.metadata.subscription_id.as_deref(), Some("sub-1"));
+    }
+
+    #[test]
+    fn joins_complete_new_diff_order_without_inference() {
+        let raw = r#"{
+            "time": 1767878802703,
+            "height": 854890776,
+            "order_statuses": [{
+                "time": "2026-01-08T13:26:42.703377851",
+                "user": "0xbc927e87d072dfac3693846a83fa6922cc6c5f2a",
+                "status": "open",
+                "order": {
+                    "user": null,
+                    "coin": "BTC",
+                    "side": "B",
+                    "limitPx": "90056.0",
+                    "sz": "0.00014",
+                    "oid": 289682192129,
+                    "timestamp": 1767878802703,
+                    "triggerCondition": "N/A",
+                    "isTrigger": false,
+                    "triggerPx": "0.0",
+                    "isPositionTpsl": false,
+                    "reduceOnly": false,
+                    "orderType": "Limit",
+                    "tif": "Alo",
+                    "cloid": "0xa097c34ee13a42a1afeed2a5ce96b413"
+                }
+            }],
+            "book_diffs": [{
+                "user": "0xbc927e87d072dfac3693846a83fa6922cc6c5f2a",
+                "oid": 289682192129,
+                "px": "90056.0",
+                "coin": "BTC",
+                "raw_book_diff": {"new": {"sz": "0.00014"}}
+            }]
+        }"#;
+        let updates: L4Updates = serde_json::from_str(raw).unwrap();
+        let order = updates.book_diffs[0].order.as_ref().unwrap();
+        assert_eq!(order.timestamp_ms, Some(1_767_878_802_703));
+        assert_eq!(
+            order.cloid.as_deref(),
+            Some("0xa097c34ee13a42a1afeed2a5ce96b413")
+        );
+        assert_eq!(order.user, Some(updates.order_statuses[0].user));
+
+        let mut absent: serde_json::Value = serde_json::from_str(raw).unwrap();
+        absent["order_statuses"][0]["order"]["cloid"] = serde_json::Value::Null;
+        let updates: L4Updates = serde_json::from_value(absent).unwrap();
+        assert_eq!(updates.book_diffs[0].order.as_ref().unwrap().cloid, None);
     }
 
     #[test]

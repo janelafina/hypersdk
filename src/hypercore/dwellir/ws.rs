@@ -11,6 +11,7 @@
 use std::{
     collections::HashSet,
     pin::Pin,
+    sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
     task::{Context, Poll},
     time::Duration,
 };
@@ -26,6 +27,8 @@ use url::Url;
 use yawc::{Frame, OpCode, Options, TcpWebSocket};
 
 use super::types::{DwellirIncoming, DwellirOutgoing, DwellirSubscription};
+
+static CONNECTION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 struct Stream {
     stream: TcpWebSocket,
@@ -246,11 +249,7 @@ impl futures::Stream for L4ConnectionStream {
     }
 }
 
-async fn run(
-    url: Url,
-    tx: UnboundedSender<Event>,
-    mut srx: UnboundedReceiver<SubChannelData>,
-) {
+async fn run(url: Url, tx: UnboundedSender<Event>, mut srx: UnboundedReceiver<SubChannelData>) {
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
     const INITIAL_BACKOFF_MS: u64 = 500;
     const MAX_BACKOFF_MS: u64 = 5_000;
@@ -275,6 +274,7 @@ async fn run(
         };
 
         attempts = 0;
+        let connection_id = next_connection_id();
 
         // Replay active subscriptions before advertising Connected so the
         // caller sees a ready stream.
@@ -290,7 +290,10 @@ async fn run(
         loop {
             tokio::select! {
                 maybe_item = stream.next() => {
-                    let Some(msg) = maybe_item else { break; };
+                    let Some(mut msg) = maybe_item else { break; };
+                    if let DwellirIncoming::L4Book(message) = &mut msg {
+                        message.set_connection_id_if_missing(&connection_id);
+                    }
                     if tx.send(Event::Message(msg)).is_err() {
                         return;
                     }
@@ -323,9 +326,71 @@ async fn run(
     }
 }
 
+/// Error from a non-reconnecting, isolated subscription snapshot request.
+#[derive(Debug)]
+pub(crate) enum OneShotSnapshotError {
+    Transport(String),
+    Provider(String),
+    Closed,
+}
+
+/// Opens a separate connection, subscribes once, and returns only the first
+/// complete L4 snapshot. There are deliberately no retries or shared state
+/// with [`L4Connection`].
+pub(crate) async fn fetch_first_l4_snapshot(
+    url: Url,
+    coin: &str,
+) -> Result<super::types::L4Snapshot, OneShotSnapshotError> {
+    let mut stream = Stream::connect(url)
+        .await
+        .map_err(|err| OneShotSnapshotError::Transport(err.to_string()))?;
+    let subscription = DwellirSubscription::L4Book {
+        coin: coin.to_owned(),
+    };
+    stream
+        .subscribe(subscription.clone())
+        .await
+        .map_err(|err| OneShotSnapshotError::Transport(err.to_string()))?;
+    let connection_id = next_connection_id();
+
+    while let Some(message) = stream.next().await {
+        match message {
+            DwellirIncoming::L4Book(super::types::L4Message::Snapshot(mut snapshot)) => {
+                snapshot.metadata.connection_id.get_or_insert(connection_id);
+                // Best-effort protocol cleanup; dropping the dedicated socket
+                // immediately afterward guarantees it cannot linger.
+                let _ = stream.unsubscribe(subscription).await;
+                return Ok(snapshot);
+            }
+            DwellirIncoming::Error(error) => return Err(OneShotSnapshotError::Provider(error)),
+            _ => {}
+        }
+    }
+    Err(OneShotSnapshotError::Closed)
+}
+
+fn next_connection_id() -> String {
+    format!(
+        "hypersdk-ws-{}",
+        CONNECTION_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed)
+    )
+}
+
 async fn backoff(attempts: &mut u32, initial_ms: u64, max_ms: u64) {
-    let delay_ms = initial_ms.saturating_mul(1u64 << (*attempts).min(16)).min(max_ms);
+    let delay_ms = initial_ms
+        .saturating_mul(1u64 << (*attempts).min(16))
+        .min(max_ms);
     *attempts = attempts.saturating_add(1);
     log::debug!("dwellir L4: backoff {delay_ms}ms (attempt {attempts})");
     sleep(Duration::from_millis(delay_ms)).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_connection_id;
+
+    #[test]
+    fn reconnect_connection_ids_are_distinct() {
+        assert_ne!(next_connection_id(), next_connection_id());
+    }
 }

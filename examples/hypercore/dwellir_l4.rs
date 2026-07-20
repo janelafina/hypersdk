@@ -54,8 +54,8 @@ async fn main() -> Result<()> {
                         status.status,
                         status.order.oid,
                         status.order.side,
-                        status.order.sz,
-                        status.order.limit_px
+                        status.order.size,
+                        status.order.price
                     );
                 }
                 for diff in &up.book_diffs {
@@ -74,6 +74,9 @@ async fn main() -> Result<()> {
                 }
             }
             L4Event::Message(DwellirIncoming::Trades(_)) => {}
+            L4Event::Message(DwellirIncoming::Error(error)) => {
+                eprintln!("[provider error] {error}");
+            }
         }
     }
 

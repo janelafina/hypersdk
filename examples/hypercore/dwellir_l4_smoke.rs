@@ -50,10 +50,10 @@ async fn main() -> Result<()> {
                         snap.asks().len()
                     );
                     if let Some(b) = snap.bids().first() {
-                        println!("        top bid oid={} px={} sz={}", b.oid, b.limit_px, b.sz);
+                        println!("        top bid oid={} px={} sz={}", b.oid, b.price, b.size);
                     }
                     if let Some(a) = snap.asks().first() {
-                        println!("        top ask oid={} px={} sz={}", a.oid, a.limit_px, a.sz);
+                        println!("        top ask oid={} px={} sz={}", a.oid, a.price, a.size);
                     }
                     saw_snapshot = true;
                 }
@@ -67,12 +67,17 @@ async fn main() -> Result<()> {
                         up.book_diffs.len()
                     );
                     for s in up.order_statuses.iter().take(2) {
-                        println!("        status {} oid={} side={} sz={}", s.status, s.order.oid, s.order.side, s.order.sz);
+                        println!(
+                            "        status {} oid={} side={} sz={}",
+                            s.status, s.order.oid, s.order.side, s.order.size
+                        );
                     }
                     for d in up.book_diffs.iter().take(2) {
                         let what = match &d.raw_book_diff {
                             RawBookDiff::New { sz } => format!("new sz={sz}"),
-                            RawBookDiff::Update { orig_sz, new_sz } => format!("update {orig_sz}->{new_sz}"),
+                            RawBookDiff::Update { orig_sz, new_sz } => {
+                                format!("update {orig_sz}->{new_sz}")
+                            }
                             RawBookDiff::Modified { sz } => format!("modified sz={sz}"),
                             RawBookDiff::Remove => "remove".to_string(),
                         };
@@ -83,6 +88,9 @@ async fn main() -> Result<()> {
                     }
                 }
                 L4Event::Message(DwellirIncoming::Trades(_)) => {}
+                L4Event::Message(DwellirIncoming::Error(error)) => {
+                    println!("[smoke] provider error: {error}");
+                }
             }
         }
         saw_snapshot

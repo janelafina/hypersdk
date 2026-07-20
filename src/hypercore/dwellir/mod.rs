@@ -39,6 +39,7 @@
 
 pub mod grpc;
 pub mod http;
+pub mod snapshot;
 pub mod types;
 pub mod ws;
 
@@ -57,10 +58,10 @@ pub use http::{
     DwellirPositionData, DwellirSpotState, INFO_BASE_URL, api_key_from_endpoint_path,
     dedicated_node_info_base_url,
 };
+pub use snapshot::*;
 pub use types::*;
 pub use ws::{
-    Event as DwellirWsEvent, Event as L4Event, L4Connection, L4ConnectionHandle,
-    L4ConnectionStream,
+    Event as DwellirWsEvent, Event as L4Event, L4Connection, L4ConnectionHandle, L4ConnectionStream,
 };
 
 /// General Dwellir WebSocket connection. Alias for the original L4-named type.
@@ -87,14 +88,26 @@ pub const API_KEY_ENV: &str = "DWELLIR_API_KEY";
 pub struct Config {
     node_host: String,
     api_key: String,
+    snapshot_client: L4SnapshotClient,
 }
 
 impl Config {
     /// Creates config from a Dwellir dedicated node host and API key.
     pub fn new(node_host: impl AsRef<str>, api_key: impl Into<String>) -> Result<Self> {
+        let node_host = dedicated_node_host(node_host)?;
+        let api_key = api_key.into();
+        let ws_endpoint = Url::parse(&format!("wss://{node_host}/{api_key}/ws"))?;
+        let grpc_endpoint = if node_host.contains(':') {
+            format!("https://{node_host}")
+        } else {
+            format!("https://{node_host}:443")
+        };
+        let snapshot_client =
+            L4SnapshotClient::new(ws_endpoint, grpc_endpoint, Some(api_key.clone()));
         Ok(Self {
-            node_host: dedicated_node_host(node_host)?,
-            api_key: api_key.into(),
+            node_host,
+            api_key,
+            snapshot_client,
         })
     }
 
@@ -136,6 +149,11 @@ impl Config {
     #[must_use]
     pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
         self.api_key = api_key.into();
+        self.snapshot_client = L4SnapshotClient::new(
+            self.ws_endpoint(),
+            self.grpc_endpoint(),
+            Some(self.api_key.clone()),
+        );
         self
     }
 
@@ -193,6 +211,32 @@ impl Config {
     #[must_use]
     pub fn l4_connection(&self) -> L4Connection {
         self.ws_connection()
+    }
+
+    /// Returns a clone of the shared, bounded authoritative snapshot client.
+    #[must_use]
+    pub fn l4_snapshot_client(&self) -> L4SnapshotClient {
+        self.snapshot_client.clone()
+    }
+
+    /// Capabilities of the strict provider-RPC snapshot implementation.
+    /// Endpoint entitlement is verified by the first request.
+    #[must_use]
+    pub const fn l4_capabilities(&self) -> L4Capabilities {
+        self.snapshot_client.capabilities()
+    }
+
+    /// Actively validates this provider endpoint's snapshot capabilities.
+    pub async fn discover_l4_capabilities(&self, coin: &str) -> L4CapabilityDiscovery {
+        self.snapshot_client.discover_capabilities(coin).await
+    }
+
+    /// Fetches a fresh authoritative snapshot on a separate gRPC channel.
+    pub async fn fetch_l4_snapshot(
+        &self,
+        coin: &str,
+    ) -> Result<AuthoritativeL4Snapshot, L4SnapshotError> {
+        self.snapshot_client.fetch_l4_snapshot(coin).await
     }
 
     /// Builds a fills gRPC connection for the configured dedicated node.

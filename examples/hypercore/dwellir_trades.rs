@@ -14,9 +14,7 @@ use std::env;
 use alloy::primitives::Address;
 use anyhow::Result;
 use futures::StreamExt;
-use hypersdk::hypercore::dwellir::{
-    self, DwellirIncoming, DwellirSubscription, DwellirWsEvent,
-};
+use hypersdk::hypercore::dwellir::{self, DwellirIncoming, DwellirSubscription, DwellirWsEvent};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -61,6 +59,9 @@ async fn main() -> Result<()> {
                 }
             }
             DwellirWsEvent::Message(DwellirIncoming::L4Book(_)) => {}
+            DwellirWsEvent::Message(DwellirIncoming::Error(error)) => {
+                eprintln!("[provider error] {error}");
+            }
         }
     }
 

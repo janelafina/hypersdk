@@ -196,6 +196,10 @@ name = "dwellir_l4_smoke"
 path = "examples/hypercore/dwellir_l4_smoke.rs"
 
 [[example]]
+name = "dwellir_l4_snapshot_smoke"
+path = "examples/hypercore/dwellir_l4_snapshot_smoke.rs"
+
+[[example]]
 name = "dwellir_fills_smoke"
 path = "examples/hypercore/dwellir_fills_smoke.rs"
 

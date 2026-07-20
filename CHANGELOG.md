@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Strict Dwellir authoritative L4 snapshots via isolated provider gRPC or fresh-subscription requests, including exchange timestamp, height, authority, typed failures, cancellation, timeout, bounded concurrency, and runtime capability discovery
+- L4 correlation/schema metadata and complete order preservation (`timestamp_ms`, CLOID, original size, TP/SL children, and forward-compatible extra fields)
+- Atomic `L4BookRecorder` ordering/gap semantics and a live seamless-resnapshot smoke test
 - `BasicOrder` trigger-order fields from `frontendOpenOrders`: `is_trigger`, `trigger_px`, `trigger_condition`, `is_position_tpsl`
 - `OrderResponseStatus::WaitingForTrigger` and `WaitingForFill` order response variants
 
