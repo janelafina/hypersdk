@@ -41,6 +41,11 @@ struct Cli {
     #[arg(long, default_value = "BTC")]
     coin: String,
 
+    /// Optional HIP-3 builder dex name (e.g. "xyz"). When set, the market and
+    /// mid are resolved from that dex instead of the main perp dex.
+    #[arg(long)]
+    dex: Option<String>,
+
     /// Distance below current mid for the passive bid, in basis points.
     #[arg(long, default_value_t = 3000)]
     distance_bps: u32,
@@ -164,15 +169,27 @@ async fn main() -> anyhow::Result<()> {
     .context("invalid HYPERLIQUID_LIVE_PRIVATE_KEY")?;
 
     let client = hypercore::mainnet();
-    let perps = client.perps().await?;
+    let perps = match args.dex.as_deref() {
+        None => client.perps().await?,
+        Some(dex_name) => {
+            let dex = client
+                .perp_dexes()
+                .await?
+                .into_iter()
+                .find(|dex| dex.name() == dex_name)
+                .with_context(|| format!("dex {dex_name} not found"))?;
+            client.perps_from(dex).await?
+        }
+    };
     let market = perps
         .iter()
-        .find(|perp| perp.name == args.coin)
+        .find(|perp| perp.name == args.coin || perp.name.ends_with(&format!(":{}", args.coin)))
         .with_context(|| format!("{} perp market not found", args.coin))?;
-    let mids = client.all_mids(None).await?;
+    let mids = client.all_mids(args.dex.clone()).await?;
     let mid = *mids
-        .get(&args.coin)
-        .with_context(|| format!("{} mid not found", args.coin))?;
+        .get(&market.name)
+        .or_else(|| mids.get(&args.coin))
+        .with_context(|| format!("{} mid not found", market.name))?;
     let distance = Decimal::ONE - Decimal::from(args.distance_bps) / Decimal::from(10_000_u32);
     let raw_price = mid * distance;
     let limit_px = market
