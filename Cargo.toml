@@ -72,6 +72,10 @@ name = "send_order"
 path = "examples/hypercore/send_order.rs"
 
 [[example]]
+name = "sub_abstraction_switch"
+path = "examples/hypercore/sub_abstraction_switch.rs"
+
+[[example]]
 name = "order_latency_probe"
 path = "examples/hypercore/order_latency_probe.rs"
 
