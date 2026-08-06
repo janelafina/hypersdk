@@ -58,8 +58,8 @@ async fn main() -> anyhow::Result<()> {
     let sub: Address = env::var("HYPERLIQUID_LIVE_SUBACCOUNT_ADDRESS")?
         .parse()
         .context("bad subaccount address")?;
-    let signer =
-        PrivateKeySigner::from_str(&env::var("HYPERLIQUID_LIVE_PRIVATE_KEY")?).context("bad key")?;
+    let signer = PrivateKeySigner::from_str(&env::var("HYPERLIQUID_LIVE_PRIVATE_KEY")?)
+        .context("bad key")?;
     if signer.address() != master {
         bail!(
             "signer {:?} does not match master {master:?}",
@@ -78,9 +78,7 @@ async fn main() -> anyhow::Result<()> {
             for b in spot.iter().filter(|b| b.coin == "USDC") {
                 println!("sub spot USDC: total={} hold={}", b.total, b.hold);
             }
-            let xyz = client
-                .clearinghouse_state(sub, Some("xyz".into()))
-                .await?;
+            let xyz = client.clearinghouse_state(sub, Some("xyz".into())).await?;
             println!(
                 "sub xyz clearinghouse: accountValue={} withdrawable={}",
                 xyz.margin_summary.account_value, xyz.withdrawable
@@ -119,7 +117,13 @@ async fn main() -> anyhow::Result<()> {
         Cmd::SetStandard => {
             println!("agentSetAbstraction(Standard) vaultAddress={sub:#x}");
             match client
-                .agent_set_abstraction(&signer, AbstractionMode::Standard, nonce.next(), Some(sub), None)
+                .agent_set_abstraction(
+                    &signer,
+                    AbstractionMode::Standard,
+                    nonce.next(),
+                    Some(sub),
+                    None,
+                )
                 .await
             {
                 Ok(()) => {}
@@ -152,9 +156,7 @@ async fn main() -> anyhow::Result<()> {
                 BatchOrder, OrderGrouping, OrderRequest, OrderResponseStatus, OrderTypePlacement,
                 Side, TimeInForce,
             };
-            let xyz = client
-                .clearinghouse_state(sub, Some("xyz".into()))
-                .await?;
+            let xyz = client.clearinghouse_state(sub, Some("xyz".into())).await?;
             let pos = xyz
                 .asset_positions
                 .iter()
@@ -231,9 +233,7 @@ async fn main() -> anyhow::Result<()> {
             println!("flattened");
         }
         Cmd::Defund => {
-            let xyz = client
-                .clearinghouse_state(sub, Some("xyz".into()))
-                .await?;
+            let xyz = client.clearinghouse_state(sub, Some("xyz".into())).await?;
             let w = xyz.withdrawable;
             if w <= Decimal::ZERO {
                 bail!("nothing withdrawable in sub xyz clearinghouse");

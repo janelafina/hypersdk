@@ -67,17 +67,15 @@ async fn main() -> anyhow::Result<()> {
 
     let portfolio = client.portfolio_state(args.user, None).await?;
     println!("Portfolio user abstraction: {}", portfolio.user_abstraction);
-    print_clearinghouse_summary("Portfolio native perps", portfolio.clearinghouse_state.native());
+    print_clearinghouse_summary(
+        "Portfolio native perps",
+        portfolio.clearinghouse_state.native(),
+    );
     println!(
         "Portfolio spot balances: {}",
         portfolio.spot_clearinghouse_state.balances.len()
     );
-    for balance in portfolio
-        .spot_clearinghouse_state
-        .balances
-        .iter()
-        .take(5)
-    {
+    for balance in portfolio.spot_clearinghouse_state.balances.iter().take(5) {
         println!(
             "- {} total={} hold={} available={} entry_ntl={}",
             balance.coin,

@@ -320,7 +320,8 @@ impl Client {
 
     /// Returns the full portfolio state for the native DEX plus all operational HIP-3 DEXes.
     pub async fn portfolio_state_all_dexes(&self, user: Address) -> Result<DwellirPortfolioState> {
-        self.portfolio_state(user, Some(ALL_DEXES.to_string())).await
+        self.portfolio_state(user, Some(ALL_DEXES.to_string()))
+            .await
     }
 
     /// Returns perpetual asset positions for `user`.

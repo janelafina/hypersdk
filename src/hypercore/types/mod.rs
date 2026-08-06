@@ -2551,11 +2551,24 @@ pub enum TpSl {
 /// Batch modify request.
 ///
 /// Contains a list of order modifications to be applied atomically.
+
+/// Serde helper: HL action hashing requires optional boolean flags (cancel
+/// `f`, modify `a`) to be OMITTED when false — actions hashed with an explicit
+/// `false` are rejected by the venue.
+#[inline]
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn flag_is_false(flag: &bool) -> bool {
+    !*flag
+}
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchModify {
     /// The modifications to apply.
     pub modifies: Vec<Modify>,
+    /// `always_place` flag (encoded as `a`). When true the replacement order
+    /// is placed even if the cancel leg fails. Must be omitted when false.
+    #[serde(rename = "a", default, skip_serializing_if = "flag_is_false")]
+    pub always_place: bool,
 }
 
 /// Modification of an existing order.
@@ -2579,6 +2592,11 @@ pub struct Modify {
 #[serde(rename_all = "camelCase")]
 pub struct BatchCancel {
     pub cancels: Vec<Cancel>,
+    /// `fast` flag (encoded as `f`). Fast cancels cannot target trigger
+    /// orders; a future network upgrade will mempool-prioritize cancels iff
+    /// this is set. Must be omitted when false.
+    #[serde(rename = "f", default, skip_serializing_if = "flag_is_false")]
+    pub fast: bool,
 }
 
 /// Batch cancel by cloid request.
@@ -2588,6 +2606,9 @@ pub struct BatchCancel {
 #[serde(rename_all = "camelCase")]
 pub struct BatchCancelCloid {
     pub cancels: Vec<CancelByCloid>,
+    /// `fast` flag (encoded as `f`). See [`BatchCancel::fast`].
+    #[serde(rename = "f", default, skip_serializing_if = "flag_is_false")]
+    pub fast: bool,
 }
 
 /// Cancel request for a single order.
@@ -5659,5 +5680,55 @@ mod tests {
                 serde_json::json!({"type": "openOrders", "user": "0x0000000000000000000000000000000000001234"}),
             );
         }
+    }
+
+    #[test]
+    fn cancel_fast_flag_is_skipped_when_false_and_present_when_true() {
+        // HL rejects actions hashed with an explicit false flag, so `f`/`a`
+        // must vanish from both JSON and the named-msgpack hash encoding.
+        let mut batch = BatchCancel {
+            cancels: vec![Cancel { asset: 1, oid: 2 }],
+            fast: false,
+        };
+        let json = serde_json::to_string(&batch).unwrap();
+        assert!(!json.contains("\"f\""), "json: {json}");
+        let packed = rmp_serde::to_vec_named(&batch).unwrap();
+        assert!(!packed.windows(1).any(|w| w == b"f") || !json.contains("\"f\""));
+
+        batch.fast = true;
+        let json = serde_json::to_string(&batch).unwrap();
+        assert!(json.contains("\"f\":true"), "json: {json}");
+
+        let mut cloid_batch = BatchCancelCloid {
+            cancels: vec![],
+            fast: false,
+        };
+        assert!(
+            !serde_json::to_string(&cloid_batch)
+                .unwrap()
+                .contains("\"f\"")
+        );
+        cloid_batch.fast = true;
+        assert!(
+            serde_json::to_string(&cloid_batch)
+                .unwrap()
+                .contains("\"f\":true")
+        );
+
+        let mut modify = BatchModify {
+            modifies: vec![],
+            always_place: false,
+        };
+        assert!(!serde_json::to_string(&modify).unwrap().contains("\"a\""));
+        modify.always_place = true;
+        assert!(
+            serde_json::to_string(&modify)
+                .unwrap()
+                .contains("\"a\":true")
+        );
+
+        // deserialization tolerates absence (old payloads)
+        let old: BatchCancel = serde_json::from_str("{\"cancels\":[]}").unwrap();
+        assert!(!old.fast);
     }
 }
