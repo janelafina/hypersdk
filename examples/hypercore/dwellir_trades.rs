@@ -58,7 +58,9 @@ async fn main() -> Result<()> {
                     );
                 }
             }
-            DwellirWsEvent::Message(DwellirIncoming::L4Book(_)) => {}
+            DwellirWsEvent::Message(
+                DwellirIncoming::L4Book(_) | DwellirIncoming::L2Book(_) | DwellirIncoming::Bbo(_),
+            ) => {}
             DwellirWsEvent::Message(DwellirIncoming::Error(error)) => {
                 eprintln!("[provider error] {error}");
             }

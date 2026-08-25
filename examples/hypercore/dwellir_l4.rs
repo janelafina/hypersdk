@@ -73,7 +73,9 @@ async fn main() -> Result<()> {
                     );
                 }
             }
-            L4Event::Message(DwellirIncoming::Trades(_)) => {}
+            L4Event::Message(DwellirIncoming::Trades(_))
+            | L4Event::Message(DwellirIncoming::L2Book(_))
+            | L4Event::Message(DwellirIncoming::Bbo(_)) => {}
             L4Event::Message(DwellirIncoming::Error(error)) => {
                 eprintln!("[provider error] {error}");
             }

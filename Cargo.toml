@@ -192,6 +192,10 @@ name = "dwellir_trades"
 path = "examples/hypercore/dwellir_trades.rs"
 
 [[example]]
+name = "dwellir_l2"
+path = "examples/hypercore/dwellir_l2.rs"
+
+[[example]]
 name = "dwellir_fills"
 path = "examples/hypercore/dwellir_fills.rs"
 
@@ -236,7 +240,7 @@ reqwest = { version = "0.13", features = ["json"] }
 rmp-serde = "1"
 rust_decimal = { version = "1.39", features = ["macros", "maths", "serde", "serde-with-str"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 serde_with = { version = "3", default-features = false, features = ["std"] }
 tokio = { version = "1", default-features = false, features = ["test-util", "time"] }
 tokio-util = { version = "0.7", default-features = false }

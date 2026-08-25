@@ -10,6 +10,10 @@
 //! - **Trades** - real-time executions, optionally filtered by wallet.
 //!   Delivered over the same Dwellir WebSocket connection. See
 //!   [`DwellirSubscription::Trades`].
+//! - **L2 book / BBO** - price-level aggregated snapshots every block and
+//!   best bid/offer updates, on the same WebSocket connection. See
+//!   [`DwellirSubscription::L2Book`], [`DwellirSubscription::Bbo`], and
+//!   [`DwellirL2Book`].
 //! - **Fills** - real-time fills across the whole chain, delivered as a gRPC
 //!   server-streaming RPC. See [`FillsConnection`].
 //!

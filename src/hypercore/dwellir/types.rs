@@ -1,13 +1,15 @@
-//! Types for Dwellir Hyperliquid streams (L4 book, trades, and fills).
+//! Types for Dwellir Hyperliquid streams (L4 book, L2 book, BBO, trades, and
+//! fills).
 
 use std::fmt;
 
 use alloy::primitives::{Address, B128};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
-use crate::hypercore::types::{Liquidation, Side, Trade};
+use crate::hypercore::types::{Bbo, BookLevel, L2Book, Liquidation, Side, Trade};
 
 /// Outgoing WebSocket messages for the Dwellir WebSocket feed.
 ///
@@ -33,6 +35,29 @@ pub enum DwellirSubscription {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user: Option<Address>,
     },
+    /// Price-level aggregated book snapshots.
+    ///
+    /// The dedicated node pushes a complete snapshot every block (~67 ms)
+    /// per subscribed coin, so a caller watching many coins should conflate
+    /// before parsing; see [`DwellirL2Book`].
+    L2Book {
+        coin: String,
+        /// Significant figures to aggregate prices to (2-5; `None` = full
+        /// price precision). Bucket width is relative to the leading digit
+        /// of the price: `n` sig figs means buckets of `10^(1-n)`..`10^-n`
+        /// of the price.
+        #[serde(default, rename = "nSigFigs", skip_serializing_if = "Option::is_none")]
+        n_sig_figs: Option<u8>,
+        /// Levels per side (1-100; venue default 20).
+        #[serde(default, rename = "nLevels", skip_serializing_if = "Option::is_none")]
+        n_levels: Option<u8>,
+        /// When `true`, the node suppresses pushes whose subscribed window is
+        /// unchanged from the previous push.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    /// Best bid/offer updates (same shape as the native `bbo` channel).
+    Bbo { coin: String },
 }
 
 impl fmt::Display for DwellirSubscription {
@@ -44,13 +69,36 @@ impl fmt::Display for DwellirSubscription {
                 coin,
                 user: Some(user),
             } => write!(f, "trades({coin},{user})"),
+            Self::L2Book {
+                coin,
+                n_sig_figs,
+                n_levels,
+                strict,
+            } => {
+                write!(f, "l2Book({coin}")?;
+                if let Some(n) = n_sig_figs {
+                    write!(f, ",nSigFigs={n}")?;
+                }
+                if let Some(n) = n_levels {
+                    write!(f, ",nLevels={n}")?;
+                }
+                if let Some(strict) = strict {
+                    write!(f, ",strict={strict}")?;
+                }
+                write!(f, ")")
+            }
+            Self::Bbo { coin } => write!(f, "bbo({coin})"),
         }
     }
 }
 
 /// Incoming WebSocket messages from the Dwellir WebSocket feed.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "channel", content = "data", rename_all = "camelCase")]
+///
+/// Wire shape is `{"channel": ..., "data": ...}`. The envelope is split
+/// before `data` is typed so that [`DwellirIncoming::L2Book`] can keep its
+/// level array as unparsed JSON (a caller conflating many coins parses only
+/// the frames it keeps); every other channel is fully typed here.
+#[derive(Debug, Clone)]
 pub enum DwellirIncoming {
     /// Echo of a subscribe/unsubscribe request.
     SubscriptionResponse(DwellirOutgoing),
@@ -58,8 +106,95 @@ pub enum DwellirIncoming {
     L4Book(L4Message),
     /// Real-time trades for a subscribed market.
     Trades(Vec<DwellirTrade>),
+    /// Price-level aggregated book snapshot (levels left unparsed).
+    L2Book(DwellirL2Book),
+    /// Best bid/offer update.
+    Bbo(Bbo),
     /// Provider-reported protocol error.
     Error(String),
+}
+
+impl<'de> Deserialize<'de> for DwellirIncoming {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+
+        #[derive(Deserialize)]
+        struct Envelope<'a> {
+            channel: String,
+            #[serde(borrow)]
+            data: &'a RawValue,
+        }
+
+        let envelope = Envelope::deserialize(deserializer)?;
+        let data = envelope.data.get();
+        let parsed = match envelope.channel.as_str() {
+            "subscriptionResponse" => {
+                serde_json::from_str(data).map(Self::SubscriptionResponse)
+            }
+            "l4Book" => serde_json::from_str(data).map(Self::L4Book),
+            "trades" => serde_json::from_str(data).map(Self::Trades),
+            "l2Book" => serde_json::from_str(data).map(Self::L2Book),
+            "bbo" => serde_json::from_str(data).map(Self::Bbo),
+            "error" => serde_json::from_str(data).map(Self::Error),
+            other => {
+                return Err(D::Error::unknown_variant(
+                    other,
+                    &[
+                        "subscriptionResponse",
+                        "l4Book",
+                        "trades",
+                        "l2Book",
+                        "bbo",
+                        "error",
+                    ],
+                ));
+            }
+        };
+        parsed.map_err(D::Error::custom)
+    }
+}
+
+/// One `l2Book` push: a complete aggregated snapshot of the subscribed
+/// window (`nLevels` per side at `nSigFigs` precision).
+///
+/// `levels` is retained as the raw `[[bids], [asks]]` JSON text so a caller
+/// that keeps only the latest frame per coin pays the level parse once per
+/// kept frame rather than once per received frame; call
+/// [`DwellirL2Book::parse_levels`] or [`DwellirL2Book::into_book`] when the
+/// frame is used.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DwellirL2Book {
+    /// Market symbol.
+    pub coin: String,
+    /// Venue block timestamp in milliseconds.
+    pub time: u64,
+    /// Unparsed `[bids, asks]` level arrays, best level first on each side.
+    pub levels: Box<RawValue>,
+}
+
+impl DwellirL2Book {
+    /// Byte length of the unparsed level text (cheap size metric).
+    #[must_use]
+    pub fn levels_len(&self) -> usize {
+        self.levels.get().len()
+    }
+
+    /// Parses the level arrays into typed `[bids, asks]`.
+    pub fn parse_levels(&self) -> serde_json::Result<[Vec<BookLevel>; 2]> {
+        serde_json::from_str(self.levels.get())
+    }
+
+    /// Converts into the SDK's native [`L2Book`] shape (always a full
+    /// snapshot on this feed).
+    pub fn into_book(self) -> serde_json::Result<L2Book> {
+        Ok(L2Book {
+            levels: self.parse_levels()?,
+            coin: self.coin,
+            time: self.time,
+            snapshot: true,
+        })
+    }
 }
 
 /// Dwellir trade payload normalized to the SDK's native trade shape.
@@ -530,6 +665,104 @@ mod tests {
             raw["subscription"]["user"],
             "0x1ed8d101622beaf192d06137dfb220851bcad9fa"
         );
+    }
+
+    #[test]
+    fn serializes_l2_book_and_bbo_subscriptions() {
+        let raw = serde_json::to_value(DwellirOutgoing::Subscribe {
+            subscription: DwellirSubscription::L2Book {
+                coin: "BTC".into(),
+                n_sig_figs: Some(3),
+                n_levels: Some(100),
+                strict: None,
+            },
+        })
+        .unwrap();
+        assert_eq!(raw["method"], "subscribe");
+        assert_eq!(raw["subscription"]["type"], "l2Book");
+        assert_eq!(raw["subscription"]["coin"], "BTC");
+        assert_eq!(raw["subscription"]["nSigFigs"], 3);
+        assert_eq!(raw["subscription"]["nLevels"], 100);
+        assert!(raw["subscription"].get("strict").is_none());
+
+        let raw = serde_json::to_value(DwellirOutgoing::Subscribe {
+            subscription: DwellirSubscription::Bbo { coin: "ETH".into() },
+        })
+        .unwrap();
+        assert_eq!(raw["subscription"], serde_json::json!({"type": "bbo", "coin": "ETH"}));
+
+        let display = DwellirSubscription::L2Book {
+            coin: "BTC".into(),
+            n_sig_figs: Some(3),
+            n_levels: Some(100),
+            strict: Some(true),
+        }
+        .to_string();
+        assert_eq!(display, "l2Book(BTC,nSigFigs=3,nLevels=100,strict=true)");
+    }
+
+    #[test]
+    fn parses_l2_book_frame_lazily() {
+        // Captured from the dedicated node (nSigFigs=3, nLevels=5), 2026-08-25.
+        let raw = r#"{"channel":"l2Book","data":{"coin":"BTC","time":1787676781404,"levels":[[{"px":"79100","sz":"370.54207","n":331},{"px":"79000","sz":"617.43165","n":363},{"px":"78900","sz":"147.02912","n":248},{"px":"78800","sz":"303.82719","n":209},{"px":"78700","sz":"173.32574","n":130}],[{"px":"79200","sz":"20.2289","n":55},{"px":"79300","sz":"419.20496","n":329},{"px":"79400","sz":"190.40848","n":367},{"px":"79500","sz":"175.87702","n":246},{"px":"79600","sz":"229.23233","n":151}]]}}"#;
+        let msg: DwellirIncoming = serde_json::from_str(raw).unwrap();
+        let DwellirIncoming::L2Book(book) = msg else {
+            panic!("expected l2Book");
+        };
+        assert_eq!(book.coin, "BTC");
+        assert_eq!(book.time, 1787676781404);
+        assert!(book.levels.get().starts_with("[[{\"px\":\"79100\""));
+        let [bids, asks] = book.parse_levels().unwrap();
+        assert_eq!(bids.len(), 5);
+        assert_eq!(asks.len(), 5);
+        assert_eq!(bids[0].px.to_string(), "79100");
+        assert_eq!(bids[0].sz.to_string(), "370.54207");
+        assert_eq!(bids[0].n, 331);
+        assert_eq!(asks[0].px.to_string(), "79200");
+        let typed = book.into_book().unwrap();
+        assert!(typed.is_snapshot());
+        assert_eq!(typed.coin, "BTC");
+        assert_eq!(typed.best_ask().unwrap().n, 55);
+    }
+
+    #[test]
+    fn parses_bbo_frame() {
+        let raw = r#"{"channel":"bbo","data":{"coin":"BTC","time":1787676781404,"bbo":[{"px":"79189","sz":"0.018","n":6},{"px":"79190","sz":"7.93421","n":20}]}}"#;
+        let msg: DwellirIncoming = serde_json::from_str(raw).unwrap();
+        let DwellirIncoming::Bbo(bbo) = msg else {
+            panic!("expected bbo");
+        };
+        assert_eq!(bbo.coin, "BTC");
+        assert_eq!(bbo.bid().unwrap().px.to_string(), "79189");
+        assert_eq!(bbo.ask().unwrap().sz.to_string(), "7.93421");
+    }
+
+    #[test]
+    fn parses_subscription_response_and_error_frames() {
+        let raw = r#"{"channel":"subscriptionResponse","data":{"method":"subscribe","subscription":{"type":"l2Book","coin":"BTC","nSigFigs":3}}}"#;
+        let msg: DwellirIncoming = serde_json::from_str(raw).unwrap();
+        let DwellirIncoming::SubscriptionResponse(DwellirOutgoing::Subscribe { subscription }) =
+            msg
+        else {
+            panic!("expected subscription response");
+        };
+        assert_eq!(
+            subscription,
+            DwellirSubscription::L2Book {
+                coin: "BTC".into(),
+                n_sig_figs: Some(3),
+                n_levels: None,
+                strict: None,
+            }
+        );
+
+        let raw = r#"{"channel":"error","data":"Invalid subscription"}"#;
+        let msg: DwellirIncoming = serde_json::from_str(raw).unwrap();
+        assert!(matches!(msg, DwellirIncoming::Error(text) if text == "Invalid subscription"));
+
+        // Unknown channels are rejected (the connection logs and skips them).
+        let raw = r#"{"channel":"candle","data":{}}"#;
+        assert!(serde_json::from_str::<DwellirIncoming>(raw).is_err());
     }
 
     #[test]

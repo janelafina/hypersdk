@@ -87,7 +87,9 @@ async fn main() -> Result<()> {
                         return saw_snapshot;
                     }
                 }
-                L4Event::Message(DwellirIncoming::Trades(_)) => {}
+                L4Event::Message(DwellirIncoming::Trades(_))
+            | L4Event::Message(DwellirIncoming::L2Book(_))
+            | L4Event::Message(DwellirIncoming::Bbo(_)) => {}
                 L4Event::Message(DwellirIncoming::Error(error)) => {
                     println!("[smoke] provider error: {error}");
                 }
