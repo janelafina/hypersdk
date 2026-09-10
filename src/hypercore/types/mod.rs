@@ -2638,10 +2638,14 @@ pub struct CancelByCloid {
 
 /// Schedule cancellation of all orders.
 ///
-/// The optional `time` field can be used to delay the cancellation.
+/// The optional `time` field can be used to delay the cancellation. Without it
+/// the action clears a pending scheduled cancel; the field must then be absent
+/// from the signed action, not `null`, or the venue recovers a different signer
+/// and answers "User or API Wallet ... does not exist".
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduleCancel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time: Option<u64>,
 }
 
