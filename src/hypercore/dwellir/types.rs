@@ -1,4 +1,5 @@
-//! Types for Dwellir Hyperliquid streams (L4 book, trades, and fills).
+//! Types for Dwellir Hyperliquid streams (L4 book, L2 book diffs, trades, and
+//! fills).
 
 use std::fmt;
 
@@ -7,7 +8,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
-use crate::hypercore::types::{Liquidation, Side, Trade};
+use crate::hypercore::types::{BookLevel, Liquidation, Side, Trade};
 
 /// Outgoing WebSocket messages for the Dwellir WebSocket feed.
 ///
@@ -482,6 +483,183 @@ impl DwellirFill {
     pub fn is_decreasing_inventory(&self) -> bool {
         self.inventory_effect() == FillInventoryEffect::Decrease
     }
+}
+
+// ---------------------------------------------------------------------------
+// L2 book diff stream (gRPC `MarketStreaming/StreamL2BookDiff`).
+// ---------------------------------------------------------------------------
+
+/// Price level carried by the L2 book diff stream.
+///
+/// This reuses the SDK's native [`BookLevel`] (`px`, `sz`, `n`) rather than
+/// introducing a new type: Dwellir's `L2Level { px, sz, n }` has exactly the
+/// same meaning. In an incremental [`L2CoinDiff`], a level whose `sz` is zero
+/// removes that price level (and its `n` is `0`).
+pub type L2DiffLevel = BookLevel;
+
+/// One frame of Dwellir's gRPC `StreamL2BookDiff` stream.
+///
+/// A frame covers one coalesce window. Coins whose book did not change in the
+/// window are omitted, and windows with no change for any subscribed coin
+/// produce no frame at all (there are no heartbeats).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct L2BookDiffUpdate {
+    /// Block time of the coalesce window, Unix milliseconds.
+    pub time: u64,
+    /// Sequential block number at the end of the coalesce window.
+    pub block_number: u64,
+    /// Per-coin changes (or opening snapshots) in this window.
+    pub diffs: Vec<L2CoinDiff>,
+}
+
+impl L2BookDiffUpdate {
+    /// Returns the entry for `coin` in this frame, if the coin changed.
+    #[must_use]
+    pub fn diff_for(&self, coin: &str) -> Option<&L2CoinDiff> {
+        self.diffs.iter().find(|diff| diff.coin == coin)
+    }
+}
+
+/// Per-coin entry of an [`L2BookDiffUpdate`].
+///
+/// Sequencing is tracked independently per coin: the opening entry is a
+/// snapshot with `seq == 1` and `prev_seq == 0`; every later entry must have
+/// `prev_seq` equal to the last accepted `seq` and `seq == prev_seq + 1`.
+/// Anything else means frames were lost and the book must be rebuilt from a
+/// fresh subscription (see [`L2BookRecorder`](super::L2BookRecorder)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct L2CoinDiff {
+    pub coin: String,
+    /// Per-coin monotonic sequence number (starts at 1 on the snapshot).
+    pub seq: u64,
+    /// `seq` of the previous entry for this coin; `0` on the snapshot.
+    pub prev_seq: u64,
+    /// Full bid side when `snapshot`, otherwise changed bid levels only.
+    pub bids: Vec<L2DiffLevel>,
+    /// Full ask side when `snapshot`, otherwise changed ask levels only.
+    pub asks: Vec<L2DiffLevel>,
+    /// `true`: this is the full book for the coin; rebuild local state from it.
+    pub snapshot: bool,
+}
+
+/// Failure converting a raw `StreamL2BookDiff` protobuf frame into the typed
+/// [`L2BookDiffUpdate`].
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+pub enum L2DiffConversionError {
+    /// A `px` or `sz` string is not a valid decimal.
+    #[error("{coin}: invalid {field} decimal {value:?} on {side} level")]
+    InvalidDecimal {
+        coin: String,
+        side: Side,
+        field: &'static str,
+        value: String,
+    },
+    /// A decimal parsed but is out of range (`px <= 0` or `sz < 0`).
+    #[error("{coin}: out-of-range {field} {value} on {side} level")]
+    OutOfRange {
+        coin: String,
+        side: Side,
+        field: &'static str,
+        value: Decimal,
+    },
+    /// An envelope integer field was negative.
+    #[error("negative {field}: {value}")]
+    NegativeField { field: &'static str, value: i64 },
+    /// A coin entry had an empty coin name.
+    #[error("coin entry with empty coin name")]
+    EmptyCoin,
+}
+
+impl TryFrom<super::l2::wire::L2BookDiffUpdate> for L2BookDiffUpdate {
+    type Error = L2DiffConversionError;
+
+    fn try_from(raw: super::l2::wire::L2BookDiffUpdate) -> Result<Self, Self::Error> {
+        let time = u64::try_from(raw.time).map_err(|_| L2DiffConversionError::NegativeField {
+            field: "time",
+            value: raw.time,
+        })?;
+        let block_number =
+            u64::try_from(raw.block_number).map_err(|_| L2DiffConversionError::NegativeField {
+                field: "block_number",
+                value: raw.block_number,
+            })?;
+        let diffs = raw
+            .diffs
+            .into_iter()
+            .map(L2CoinDiff::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            time,
+            block_number,
+            diffs,
+        })
+    }
+}
+
+impl TryFrom<super::l2::wire::L2CoinDiff> for L2CoinDiff {
+    type Error = L2DiffConversionError;
+
+    fn try_from(raw: super::l2::wire::L2CoinDiff) -> Result<Self, Self::Error> {
+        if raw.coin.is_empty() {
+            return Err(L2DiffConversionError::EmptyCoin);
+        }
+        let convert = |levels: Vec<super::l2::wire::L2Level>, side: Side| {
+            levels
+                .into_iter()
+                .map(|level| convert_l2_level(&raw.coin, side, level))
+                .collect::<Result<Vec<_>, _>>()
+        };
+        let bids = convert(raw.bids, Side::Bid)?;
+        let asks = convert(raw.asks, Side::Ask)?;
+        Ok(Self {
+            coin: raw.coin,
+            seq: raw.seq,
+            prev_seq: raw.prev_seq,
+            bids,
+            asks,
+            snapshot: raw.snapshot,
+        })
+    }
+}
+
+fn convert_l2_level(
+    coin: &str,
+    side: Side,
+    level: super::l2::wire::L2Level,
+) -> Result<L2DiffLevel, L2DiffConversionError> {
+    let parse = |field: &'static str, value: &str| {
+        value
+            .parse::<Decimal>()
+            .map_err(|_| L2DiffConversionError::InvalidDecimal {
+                coin: coin.to_owned(),
+                side,
+                field,
+                value: value.to_owned(),
+            })
+    };
+    let px = parse("px", &level.px)?;
+    let sz = parse("sz", &level.sz)?;
+    if px <= Decimal::ZERO {
+        return Err(L2DiffConversionError::OutOfRange {
+            coin: coin.to_owned(),
+            side,
+            field: "px",
+            value: px,
+        });
+    }
+    if sz < Decimal::ZERO {
+        return Err(L2DiffConversionError::OutOfRange {
+            coin: coin.to_owned(),
+            side,
+            field: "sz",
+            value: sz,
+        });
+    }
+    Ok(BookLevel {
+        px,
+        sz,
+        n: level.n as usize,
+    })
 }
 
 #[cfg(test)]
