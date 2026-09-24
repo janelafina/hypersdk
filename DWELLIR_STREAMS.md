@@ -1,8 +1,9 @@
-# Dwellir WebSocket Streams
+# Dwellir Streams
 
 `hypersdk::hypercore::dwellir` exposes Dwellir's Hyperliquid WebSocket feed for
 real-time trades and L4 order book data. Both streams use the same reconnecting
-connection type and message envelope.
+connection type and message envelope. Aggregated L2 book diffs are delivered
+over gRPC instead; see [L2 Book Diff Stream (gRPC)](#l2-book-diff-stream-grpc).
 
 ## Setup
 
@@ -296,3 +297,162 @@ cargo run --example dwellir_l4_snapshot_smoke -- BTC
 It records the hot WebSocket while isolated snapshots are in flight, applies
 only updates newer than each snapshot, and verifies the rebuilt resting book
 against a second authoritative snapshot without perturbing the primary stream.
+
+## L2 Book Diff Stream (gRPC)
+
+Dwellir's v3 `MarketStreaming` service exposes
+`hyperliquid_l1_gateway.v3.MarketStreaming/StreamL2BookDiff`: aggregated (L2)
+price-level changes for 1-20 coins on one server-streaming RPC. It uses the
+same dedicated node gRPC endpoint and `x-api-key` metadata as the fills
+stream (TLS on `https://{DWELLIR_NODE_HOST}:443`).
+
+### Setup
+
+```bash
+export DWELLIR_NODE_HOST="dedicated-hyperliquid-...n.dwellir.com"
+export DWELLIR_API_KEY="..."
+# or, without a node host: DWELLIR_GRPC_ENDPOINT="https://...:443" + DWELLIR_API_KEY
+```
+
+```rust
+use futures::StreamExt;
+use hypersdk::hypercore::dwellir::{self, L2BookDiffEvent, L2BookDiffRequest, L2BookSet};
+
+let request = L2BookDiffRequest::new(["BTC", "ETH"]).n_levels(50);
+let mut conn = dwellir::l2_book_diff_from_env(request)?;
+// or: dwellir::Config::from_env()?.l2_book_diff_connection(request)?
+let mut books = L2BookSet::from_request(conn.request());
+
+while let Some(event) = conn.next().await {
+    match event {
+        L2BookDiffEvent::Connected => {}
+        L2BookDiffEvent::Disconnected => {}
+        L2BookDiffEvent::Message(update) => match books.apply(&update) {
+            Ok(_) => {
+                let btc = books.get("BTC").unwrap();
+                println!("{:?} / {:?}", btc.best_bid(), btc.best_ask());
+            }
+            // Lost frames: resubscribe; the fresh snapshots rebuild the books.
+            Err(err) if err.requires_resync() => conn.reconnect(),
+            Err(err) => eprintln!("{err}"),
+        },
+        L2BookDiffEvent::Error(err) => {
+            eprintln!("fatal: {err}");
+            break; // terminal: the stream ends after this event
+        }
+    }
+}
+```
+
+### Request parameters
+
+`L2BookDiffRequest` is validated client-side before any connection is made
+(`L2BookDiffRequestError` on failure):
+
+| Field        | Rule                                                                 |
+|--------------|----------------------------------------------------------------------|
+| `coins`      | Required, 1-20 distinct case-sensitive names. Duplicates are removed. |
+| `n_levels`   | `None` = server default (20); `Some(0)` = full depth (endpoint must support it, otherwise `FAILED_PRECONDITION`); otherwise 1-100. |
+| `n_sig_figs` | 2, 3, 4 or 5.                                                         |
+| `mantissa`   | Only with `n_sig_figs == 5`; 2 or 5.                                  |
+
+Builder helpers: `.n_levels(n)`, `.full_depth()`, `.n_sig_figs(n)`,
+`.mantissa(m)`.
+
+### Events
+
+`L2BookDiffConnection` (and its detached `L2BookDiffConnectionStream`) yield
+`L2BookDiffEvent`:
+
+- `Connected` — stream opened; fresh `snapshot: true` entries follow for every
+  coin.
+- `Disconnected` — stream closed; a reconnect (with exponential backoff) is
+  already underway. `ABORTED` (server frame loss), `DEADLINE_EXCEEDED` (slow
+  consumer), `UNAVAILABLE` and transport errors are retried.
+- `Message(L2BookDiffUpdate)` — one coalesce window:
+  `{ time, block_number, diffs: Vec<L2CoinDiff> }`, where
+  `L2CoinDiff { coin, seq, prev_seq, bids, asks, snapshot }` and levels are
+  the SDK's `BookLevel { px: Decimal, sz: Decimal, n }` (alias `L2DiffLevel`).
+  Decimals are parsed strictly when the frame is received.
+- `Error(L2BookDiffStreamError)` — terminal. `INVALID_ARGUMENT`,
+  `UNAUTHENTICATED`, `PERMISSION_DENIED`, `FAILED_PRECONDITION` and
+  `UNIMPLEMENTED` cannot be fixed by retrying, so they are reported once and
+  the stream ends instead of reconnecting in a loop.
+
+A frame that fails typed conversion (e.g. an unparsable decimal) is logged
+and the connection resubscribes, because silently skipping it would break the
+per-coin sequence chain. Unchanged coins are omitted from frames, windows
+with no change produce no frame, and there are no heartbeats: a quiet stream
+is healthy unless it is closed with an error status.
+
+### Sequencing and recovery
+
+- The stream opens with one `snapshot: true` entry per coin (`seq: 1`,
+  `prev_seq: 0`); later entries carry only changed levels. A level with
+  `sz == 0` (e.g. `"0.0"`) removes that price.
+- Sequence numbers are per coin. Every entry's `prev_seq` must equal the last
+  accepted `seq` for that coin, and `seq == prev_seq + 1`. Anything else is
+  loss.
+- There is no resume cursor: every reconnect re-opens with fresh snapshots.
+  To recover from a detected gap call `L2BookDiffConnection::reconnect()` (or
+  `L2BookDiffHandle::reconnect()` after `split()`).
+
+### Recorders
+
+`L2BookRecorder` holds one coin's book (bids descending, asks ascending) and
+exposes `bids()`, `asks()`, `best_bid()`, `best_ask()`, `seq()`,
+`block_number()` and `time_ms()`. `L2BookSet` holds one recorder per
+subscribed coin and routes each frame.
+
+- A `snapshot: true` entry always replaces the coin's book and adopts its
+  `seq`, whatever the previous `seq` was. Reconnects and server-initiated
+  resets therefore need no manual `reset()`.
+- A non-snapshot entry before any snapshot, a `prev_seq` mismatch, or a bad
+  `seq` step returns `L2ReconstructionError` (`MissingBaseSnapshot`,
+  `SequenceGap`, `InvalidSeqStep`; `requires_resync()` is `true`) and leaves
+  the book unchanged.
+- `L2BookSet::apply` is atomic per frame: all entries are validated before any
+  are applied. Entries for coins the set does not track return `UnknownCoin`;
+  two entries for one coin return `DuplicateCoin`.
+- Removing a price that is not in the book is treated as a no-op; duplicate
+  prices inside one snapshot return `DuplicateLevel`.
+- A recorder's `block_number()` only advances when its coin changes;
+  `L2BookSet::block_number()` tracks the latest frame.
+
+### Unified book subscription
+
+`BookConnection` lets downstream code choose the book feed at runtime:
+
+```rust
+use hypersdk::hypercore::dwellir::{self, BookEvent, BookMessage, BookSubscription, L2BookDiffRequest};
+
+let sub = if use_l4 {
+    BookSubscription::l4("BTC") // WebSocket L4Book
+} else {
+    BookSubscription::l2_diff(L2BookDiffRequest::new(["BTC", "ETH"])) // gRPC diffs
+};
+let mut books = dwellir::book_from_env(sub)?; // or Config::book_connection(sub)?
+
+while let Some(event) = books.next().await {
+    match event {
+        BookEvent::Message(BookMessage::L4(msg)) => { /* L4Message */ }
+        BookEvent::Message(BookMessage::L2(update)) => { /* L2BookDiffUpdate */ }
+        BookEvent::Error(err) if err.is_terminal() => break,
+        _ => {}
+    }
+}
+```
+
+Payloads are not normalized: L4 carries individual orders and L2 carries
+aggregated levels, so `BookMessage` keeps each in its typed form. Recorders
+stay separate (`L4BookRecorder` needs authoritative snapshots with exchange
+time; use `L2BookSet` for L2). `BookConnection::reconnect()` forces a resync
+on the L2 transport and returns `false` for L4. L4 provider errors are
+reported as non-terminal `BookError::L4Provider`.
+
+Run the example (add `--l4` to use the L4 feed through the same interface):
+
+```bash
+cargo run --example dwellir_l2_book_diff -- BTC ETH
+cargo run --example dwellir_l2_book_diff -- --l4 BTC
+```

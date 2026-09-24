@@ -343,7 +343,7 @@ async fn run(
             Ok(ch) => ch,
             Err(err) => {
                 log::error!("dwellir fills: channel to {endpoint} failed: {err:?}");
-                backoff(&mut attempts, INITIAL_BACKOFF_MS, MAX_BACKOFF_MS).await;
+                backoff("fills", &mut attempts, INITIAL_BACKOFF_MS, MAX_BACKOFF_MS).await;
                 continue;
             }
         };
@@ -365,7 +365,7 @@ async fn run(
             Ok(resp) => resp.into_inner(),
             Err(status) => {
                 log::error!("dwellir fills: StreamFills rejected: {status}");
-                backoff(&mut attempts, INITIAL_BACKOFF_MS, MAX_BACKOFF_MS).await;
+                backoff("fills", &mut attempts, INITIAL_BACKOFF_MS, MAX_BACKOFF_MS).await;
                 continue;
             }
         };
@@ -405,7 +405,7 @@ async fn run(
         if tx.send(Event::Disconnected).is_err() {
             return;
         }
-        backoff(&mut attempts, INITIAL_BACKOFF_MS, MAX_BACKOFF_MS).await;
+        backoff("fills", &mut attempts, INITIAL_BACKOFF_MS, MAX_BACKOFF_MS).await;
     }
 }
 
@@ -424,11 +424,13 @@ pub(crate) async fn build_channel(
     Ok(ep.connect().await?)
 }
 
-async fn backoff(attempts: &mut u32, initial_ms: u64, max_ms: u64) {
+/// Sleeps for an exponentially growing delay (capped at `max_ms`) and bumps
+/// `attempts`. `label` only affects the debug log prefix (`dwellir {label}:`).
+pub(crate) async fn backoff(label: &str, attempts: &mut u32, initial_ms: u64, max_ms: u64) {
     let delay_ms = initial_ms
         .saturating_mul(1u64 << (*attempts).min(16))
         .min(max_ms);
     *attempts = attempts.saturating_add(1);
-    log::debug!("dwellir fills: backoff {delay_ms}ms (attempt {attempts})");
+    log::debug!("dwellir {label}: backoff {delay_ms}ms (attempt {attempts})");
     sleep(Duration::from_millis(delay_ms)).await;
 }

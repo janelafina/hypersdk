@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Strict Dwellir authoritative L4 snapshots via isolated provider gRPC or fresh-subscription requests, including exchange timestamp, height, authority, typed failures, cancellation, timeout, bounded concurrency, and runtime capability discovery
 - L4 correlation/schema metadata and complete order preservation (`timestamp_ms`, CLOID, original size, TP/SL children, and forward-compatible extra fields)
 - Atomic `L4BookRecorder` ordering/gap semantics and a live seamless-resnapshot smoke test
+- Dwellir gRPC L2 book diff stream (`MarketStreaming/StreamL2BookDiff`): validated `L2BookDiffRequest`, reconnecting `L2BookDiffConnection` with `Connected`/`Disconnected`/`Message`/terminal `Error` events, forced resync via `reconnect()`, and `Config::l2_book_diff_connection` / `l2_book_diff_from_env`
+- Typed `L2BookDiffUpdate` / `L2CoinDiff` messages with strict decimal conversion (`L2DiffConversionError`)
+- Strict `L2BookRecorder` and multi-coin `L2BookSet` enforcing the per-coin `seq`/`prev_seq` chain, with automatic rebuild on snapshot entries
+- Unified `BookConnection` / `BookSubscription` / `BookEvent` over the L4 WebSocket and L2 diff gRPC feeds (`Config::book_connection`, `book_from_env`)
+- New example: `examples/hypercore/dwellir_l2_book_diff.rs`
 - `BasicOrder` trigger-order fields from `frontendOpenOrders`: `is_trigger`, `trigger_px`, `trigger_condition`, `is_position_tpsl`
 - `OrderResponseStatus::WaitingForTrigger` and `WaitingForFill` order response variants
 - Exchange actions `sendToEvmWithData`, `topUpIsolatedOnlyMargin`, `claimRewards`, `authorizeAqav2Role`, and `validatorL1Stream`, with `HttpClient` methods for each

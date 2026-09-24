@@ -1,7 +1,7 @@
 //! Dwellir integrations for Hyperliquid.
 //!
-//! Dwellir exposes an authenticated HTTP Info Endpoint plus two streams that
-//! go beyond the native Hyperliquid WebSocket API:
+//! Dwellir exposes an authenticated HTTP Info Endpoint plus several streams
+//! that go beyond the native Hyperliquid WebSocket API:
 //!
 //! - **Info Endpoint** — authenticated HTTP JSON queries for user open orders
 //!   and positions. See [`InfoClient`].
@@ -12,12 +12,19 @@
 //!   [`DwellirSubscription::Trades`].
 //! - **Fills** - real-time fills across the whole chain, delivered as a gRPC
 //!   server-streaming RPC. See [`FillsConnection`].
+//! - **L2 book diffs** - aggregated price-level changes for 1-20 coins with a
+//!   per-coin `seq`/`prev_seq` chain, delivered over gRPC
+//!   (`MarketStreaming/StreamL2BookDiff`). See [`L2BookDiffConnection`] and
+//!   the strict [`L2BookRecorder`] / [`L2BookSet`].
+//! - **Unified book stream** - [`BookConnection`] lets a consumer choose L4
+//!   (WebSocket) or L2 diffs (gRPC) at runtime via [`BookSubscription`].
 //!
-//! Both connections share the same event-oriented shape as the existing
+//! All connections share the same event-oriented shape as the existing
 //! [`crate::hypercore::ws::Connection`]: they yield `Event::Connected`,
 //! `Event::Disconnected`, and `Event::Message(..)` values over a
 //! `futures::Stream`, and reconnect automatically with exponential backoff
-//! so they are safe to use in long-running processes.
+//! so they are safe to use in long-running processes. The L2 diff connection
+//! additionally emits a terminal `Error` event for non-retryable RPC statuses.
 //!
 //! # Endpoints and credentials
 //!
@@ -28,17 +35,21 @@
 //! | Variable               | Purpose                                                       |
 //! |------------------------|---------------------------------------------------------------|
 //! | `DWELLIR_NODE_HOST`    | Dedicated node host, e.g. `dedicated-hyperliquid-...n.dwellir.com`. |
-//! | `DWELLIR_API_KEY`      | API key used in REST/WS paths and optional `x-api-key` gRPC metadata. |
+//! | `DWELLIR_API_KEY`      | API key used in REST/WS paths and `x-api-key` gRPC metadata.  |
 //! | `DWELLIR_WS_ENDPOINT`  | Backward-compatible fallback; full L4 WebSocket URL.          |
-//! | `DWELLIR_GRPC_ENDPOINT`| Backward-compatible fallback for the fills gRPC endpoint.     |
+//! | `DWELLIR_GRPC_ENDPOINT`| Backward-compatible fallback for the gRPC endpoint (fills, L2 diffs). |
 //!
 //! [`Config`] lets callers configure the dedicated node once and then derive
-//! the WebSocket endpoint, fills gRPC endpoint, and HTTP info client from it.
-//! See [`Config::from_env`], [`info_from_env`], [`ws_from_env`], and
-//! [`fills_from_env`] for convenience wrappers.
+//! the WebSocket endpoint, gRPC endpoint, and HTTP info client from it.
+//! See [`Config::from_env`], [`info_from_env`], [`ws_from_env`],
+//! [`fills_from_env`], [`l2_book_diff_from_env`], and [`book_from_env`] for
+//! convenience wrappers.
 
+pub mod book;
 pub mod grpc;
 pub mod http;
+pub mod l2;
+pub mod l2_book;
 pub mod snapshot;
 pub mod types;
 pub mod ws;
@@ -48,6 +59,7 @@ use std::env;
 use anyhow::{Context, Result, anyhow};
 use url::Url;
 
+pub use book::{BookConnection, BookError, BookEvent, BookMessage, BookSubscription};
 pub use grpc::{
     Event as FillsEvent, FillsConnection, FillsConnectionStream,
     StartPosition as FillsStartPosition,
@@ -58,6 +70,12 @@ pub use http::{
     DwellirPositionData, DwellirSpotState, INFO_BASE_URL, api_key_from_endpoint_path,
     dedicated_node_info_base_url,
 };
+pub use l2::{
+    L2_DIFF_DEFAULT_LEVELS, L2_DIFF_MAX_COINS, L2_DIFF_MAX_LEVELS, L2BookDiffConnection,
+    L2BookDiffConnectionStream, L2BookDiffEvent, L2BookDiffHandle, L2BookDiffRequest,
+    L2BookDiffRequestError, L2BookDiffStreamError,
+};
+pub use l2_book::{L2ApplyOutcome, L2BookRecorder, L2BookSet, L2ReconstructionError};
 pub use snapshot::*;
 pub use types::*;
 pub use ws::{
@@ -75,7 +93,7 @@ pub type DwellirWsConnectionStream = L4ConnectionStream;
 pub const WS_ENDPOINT_ENV: &str = "DWELLIR_WS_ENDPOINT";
 /// Env var name for the Dwellir dedicated node host.
 pub const NODE_HOST_ENV: &str = "DWELLIR_NODE_HOST";
-/// Env var name for the Dwellir fills gRPC endpoint.
+/// Env var name for the Dwellir gRPC endpoint (fills, L2 book diffs).
 pub const GRPC_ENDPOINT_ENV: &str = "DWELLIR_GRPC_ENDPOINT";
 /// Env var name for the Dwellir API key (sent as `x-api-key` gRPC metadata).
 pub const API_KEY_ENV: &str = "DWELLIR_API_KEY";
@@ -244,6 +262,29 @@ impl Config {
     pub fn fills_connection(&self) -> FillsConnection {
         FillsConnection::latest(self.grpc_endpoint(), Some(self.api_key.clone()))
     }
+
+    /// Builds an L2 book diff gRPC connection (`StreamL2BookDiff`) for the
+    /// configured dedicated node. Fails if `request` does not validate.
+    pub fn l2_book_diff_connection(
+        &self,
+        request: L2BookDiffRequest,
+    ) -> Result<L2BookDiffConnection, L2BookDiffRequestError> {
+        L2BookDiffConnection::new(self.grpc_endpoint(), Some(self.api_key.clone()), request)
+    }
+
+    /// Builds a unified book connection: L4 over WebSocket or L2 diffs over
+    /// gRPC, depending on `subscription`.
+    pub fn book_connection(
+        &self,
+        subscription: BookSubscription,
+    ) -> Result<BookConnection, L2BookDiffRequestError> {
+        Ok(match subscription {
+            BookSubscription::L4 { coin } => BookConnection::from_l4(self.l4_connection(), coin),
+            BookSubscription::L2Diff(request) => {
+                BookConnection::from_l2_diff(self.l2_book_diff_connection(request)?)
+            }
+        })
+    }
 }
 
 fn dedicated_node_host(endpoint_or_host: impl AsRef<str>) -> Result<String> {
@@ -331,6 +372,37 @@ pub fn fills_from_env_at(start: FillsStartPosition) -> Result<FillsConnection> {
         api_key_from_env(),
         start,
     ))
+}
+
+/// Builds an L2 book diff gRPC connection using [`NODE_HOST_ENV`] and
+/// [`API_KEY_ENV`].
+///
+/// Falls back to [`GRPC_ENDPOINT_ENV`] plus [`API_KEY_ENV`] when
+/// [`NODE_HOST_ENV`] is not configured.
+pub fn l2_book_diff_from_env(request: L2BookDiffRequest) -> Result<L2BookDiffConnection> {
+    if env::var(NODE_HOST_ENV).is_ok() {
+        return Ok(Config::from_env()?.l2_book_diff_connection(request)?);
+    }
+
+    Ok(L2BookDiffConnection::new(
+        grpc_endpoint_from_env()?,
+        api_key_from_env(),
+        request,
+    )?)
+}
+
+/// Builds a unified book connection from the environment.
+///
+/// L4 subscriptions use the WebSocket endpoint from [`Config::from_env`];
+/// L2 diff subscriptions use [`l2_book_diff_from_env`] (including its
+/// [`GRPC_ENDPOINT_ENV`] fallback).
+pub fn book_from_env(subscription: BookSubscription) -> Result<BookConnection> {
+    Ok(match subscription {
+        BookSubscription::L4 { coin } => BookConnection::from_l4(l4_from_env()?, coin),
+        BookSubscription::L2Diff(request) => {
+            BookConnection::from_l2_diff(l2_book_diff_from_env(request)?)
+        }
+    })
 }
 
 #[cfg(test)]
