@@ -47,8 +47,8 @@ fn print_auction_status(status: &GossipPriorityAuctionStatus) {
         let elapsed = now.saturating_sub(slot.start_time_seconds);
         let progress = (elapsed as f64 / slot.duration_seconds as f64).clamp(0.0, 1.0);
 
-        let start: Decimal = slot.start_gas;
-        let end: Decimal = slot.end_gas.unwrap_or(start);
+        let start = slot.start_gas;
+        let end = slot.end_gas.unwrap_or(start);
         let current_price =
             start - (start - end) * Decimal::from_f64_retain(progress).unwrap_or_default();
 
@@ -65,7 +65,7 @@ fn print_auction_status(status: &GossipPriorityAuctionStatus) {
 
         let end_str = slot
             .end_gas
-            .map(|d| format!("{:.4}", d))
+            .map(|d| d.to_string())
             .unwrap_or_else(|| "-".to_string());
 
         println!(

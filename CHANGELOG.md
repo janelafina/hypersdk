@@ -18,6 +18,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - New example: `examples/hypercore/dwellir_l2_book_diff.rs`
 - `BasicOrder` trigger-order fields from `frontendOpenOrders`: `is_trigger`, `trigger_px`, `trigger_condition`, `is_position_tpsl`
 - `OrderResponseStatus::WaitingForTrigger` and `WaitingForFill` order response variants
+- Exchange actions `sendToEvmWithData`, `topUpIsolatedOnlyMargin`, `claimRewards`, `authorizeAqav2Role`, and `validatorL1Stream`, with `HttpClient` methods for each
+- Deployer actions in the new `hypercore::types::deploy` module: HIP-1/HIP-2 `spotDeploy`, HIP-3 `perpDeploy`, and HIP-4 outcome deployment and settlement, reachable via `HttpClient::spot_deploy`, `perp_deploy`, and `activate_outcome_deployer`
+- WebSocket post requests: `Connection::post` and `ConnectionHandle::post` send info requests and signed actions over an open socket, with replies arriving as `Incoming::Post`
+- Info requests `userDexAbstraction` and `outcomeTemplates`, via `HttpClient::user_dex_abstraction` and `outcome_templates`
+- `fast` flag on `BatchCancel` and `BatchCancelCloid`, serialized as `f` and omitted when false
+- Optional `destination` on the `reserveRequestWeight` action, to credit reserved capacity to another account
+- New example: `examples/hypercore/websocket_post.rs`
+- Two ignored live-audit tests, `info_requests_are_still_answered` and `deployer_action_shapes_are_still_accepted`, that walk the SDK's surface against the real API
+- Single-order `modify` action, as `Action::Modify` and `HttpClient::modify_order`. `batchModify` was the only form covered before
+- `always_place` on `Modify` and `BatchModify`, serialized as `a` and omitted when false, which places the replacement order even if the cancel failed
+- `spotDeploy` variants `setTokenAnnotation` and `setDeployerLabel`
+- `outcomeDeploy` variant `setSubDeployers`, which grants a sub-deployer one HIP-4 action
+- Eighteen undocumented exchange actions the exchange accepts but the docs do not mention, each with an `HttpClient` method: `borrowLend`, `createSubAccount`, `subAccountModify`, `subAccountTransfer`, `subAccountSpotTransfer`, `createVault`, `vaultModify`, `vaultDistribute`, `setDisplayName`, `setReferrer`, `registerReferrer`, `spotUser`, `finalizeEvmContract`, `CSignerAction`, `CValidatorAction`, `linkStakingUser`, `stakingLinkDisableTradingUser`, and `userPortfolioMargin`
+- Nineteen undocumented info requests, each with an `HttpClient` method: `exchangeStatus`, `gossipRootIps`, `isVip`, `leadingVaults`, `legalCheck`, `liquidatable`, `marginTable`, `maxMarketOrderNtls`, `preTransferCheck`, `recentTrades`, `subAccounts2`, `twapHistory`, `usdcRouting`, `userBorrowLendInterest`, `userTwapSliceFillsByTime`, `validatorL1Votes`, `validatorSummaries`, `vaultSummaries`, and `webData2`
+- WS subscriptions `assetCtxs`, `spotAssetCtxs`, and `userHistoricalOrders`
+- `Incoming::Error`, carrying the `error` channel. A rejected subscription used to be logged and dropped, so a removed subscription looked like a feed that never sent anything
+- Live-audit tests `subscriptions_are_still_accepted` and `undocumented_action_shapes_are_accepted`, covering the two surfaces the existing audits missed
+- `PredictedFundingVenue::funding_interval_hours`, the funding interval the exchange reports per venue. Optional: 19 of 627 venue payloads on mainnet omit it
+
+### Removed
+
+- `HttpClient::aligned_quote_token_info` and `InfoRequest::AlignedQuoteTokenInfo`. The endpoint no longer exists: mainnet and testnet both reject it with the same error they give an unknown request type, and it is absent from the docs
+- **Breaking**: `Subscription::WebData2` and `Incoming::WebData2`. The exchange rejects the subscription; `webData3` replaces it. The `webData2` *info* request still works and is now available as `HttpClient::web_data2`
+
+### Changed
+
+- **Breaking**: `HttpClient::predicted_fundings` now returns `Option<PredictedFundingVenue>` for each venue. The exchange sends `null` when a coin is not listed on a venue, which failed to deserialize with `invalid type: null, expected struct PredictedFundingVenue`. On mainnet 69 of 696 venue slots are null, so the endpoint was unusable. `None` means the coin is not listed there, not a zero funding rate
+- **Breaking**: `BatchCancel` and `BatchCancelCloid` gained a `fast` field, so struct literals need `fast: false`
+- **Breaking**: `BatchModify` gained an `always_place` field, so struct literals need `always_place: false`
+- **Breaking**: HIP-4 outcome deployment moved from `SpotDeployAction::Outcome` to its own `Action::OutcomeDeploy`, sent as `{"type": "outcomeDeploy", ...}`. The exchange stopped parsing the old nesting. Use `HttpClient::outcome_deploy`
+- **Breaking**: `HttpClient::reserve_request_weight` takes a `destination: Option<Address>` argument
+- `Response`, `OkResponse`, `OrderResponseStatus`, and `ActionRequest` now derive `Clone`; `Response`, `OkResponse`, and `OrderResponseStatus` also derive `Serialize`
+- `OkResponse` gained `CreateSubAccount` and `CreateVault`, which carry the address the exchange assigns
+- All three signing paths (`sign`, `sign_sync`, `prehash`) now share one exhaustive match over `Action`, so adding an action is one edit instead of three
+
+### Dependencies
+
+- Refreshed every dependency to its latest release. `base64` 0.22 -> 0.23 and `hex-literal` 0.4 -> 1 in the SDK, `iroh-mdns-address-lookup` 0.4 -> 0.5 in hypecli, plus a full lockfile update
+- **Breaking**: MSRV raised to 1.94.1 on both crates. `alloy` 2.4 already required it, so the declared 1.85.0 had not been buildable for a while and was holding back updates to `serde_with`, `ruint`, `icu_*` and the `aws-*` tree
 
 ## [v0.2.10]
 

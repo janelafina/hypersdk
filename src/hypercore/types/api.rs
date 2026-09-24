@@ -6,7 +6,7 @@
 
 use alloy::{
     dyn_abi::TypedData,
-    primitives::{Address, B256},
+    primitives::{Address, B256, Bytes},
     signers::{Signer, SignerSync, k256::ecdsa::RecoveryId},
 };
 use chrono::{DateTime, Utc};
@@ -14,12 +14,12 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use super::solidity;
+use super::{deploy, solidity};
 use crate::hypercore::{
     ApiError, Chain,
     types::{
         BatchCancel, BatchCancelCloid, BatchModify, BatchOrder, CORE_MAINNET_EIP712_DOMAIN,
-        OrderResponseStatus, ScheduleCancel, Signature,
+        OidOrCloid, OrderRequest, OrderResponseStatus, ScheduleCancel, Signature,
     },
     utils::{self, get_typed_data},
 };
@@ -27,7 +27,7 @@ use crate::hypercore::{
 /// Request for an action.
 ///
 /// Contains the action, a nonce, signature, optional vault address, and optional expiry.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionRequest {
     /// Action.
@@ -67,6 +67,9 @@ impl ActionRequest {
 pub enum Action {
     /// Order insertion.
     Order(BatchOrder),
+    /// Replace a single resting order.
+    #[from(skip)]
+    Modify(ModifyAction),
     /// Order modification.
     BatchModify(BatchModify),
     /// Order cancellation by oid.
@@ -164,6 +167,9 @@ pub enum Action {
     ReserveRequestWeight {
         /// Number of requests to reserve (0.0005 USDC per request).
         weight: u32,
+        /// Account the reserved capacity is credited to. `None` credits the signer.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        destination: Option<Address>,
     },
     /// HIP-3 backstop liquidator deposit/withdraw.
     #[from(skip)]
@@ -172,6 +178,111 @@ pub enum Action {
     /// HIP-4 outcome token split/merge/negate.
     #[from(skip)]
     UserOutcome(UserOutcomeAction),
+    /// Core to EVM transfer carrying a data payload.
+    #[from(skip)]
+    SendToEvmWithData(SendToEvmWithDataAction),
+    /// Add isolated margin up to a target leverage instead of a USDC amount.
+    #[from(skip)]
+    TopUpIsolatedOnlyMargin(TopUpIsolatedOnlyMargin),
+    /// Claim accrued referral and builder rewards.
+    #[from(skip)]
+    ClaimRewards,
+    /// Authorize an AQAv2 role for an aligned quote asset.
+    #[from(skip)]
+    #[serde(rename = "authorizeAqav2Role")]
+    AuthorizeAqav2Role(AuthorizeAqav2Role),
+    /// Validator vote on the risk-free rate for an aligned quote asset.
+    #[from(skip)]
+    ValidatorL1Stream(ValidatorL1Stream),
+    /// HIP-1/HIP-2 spot token deployment, and HIP-4 outcome deployment.
+    #[from(skip)]
+    SpotDeploy(deploy::SpotDeployAction),
+    /// HIP-3 perp DEX deployment and operation.
+    #[from(skip)]
+    PerpDeploy(deploy::PerpDeployAction),
+    /// HIP-4 outcome market deployment and settlement.
+    #[from(skip)]
+    OutcomeDeploy(deploy::OutcomeDeployAction),
+    /// HIP-4 outcome deployer activation.
+    #[from(skip)]
+    ActivateOutcomeDeployer(deploy::ActivateOutcomeDeployer),
+
+    // ----------------------------------------------------------------
+    // Undocumented actions.
+    //
+    // The gitbook does not cover any of these, but the exchange accepts all of them on
+    // mainnet. Shapes are cross-checked against the nktkas TypeScript SDK and probed live by
+    // `undocumented_action_shapes_are_accepted`.
+    // ----------------------------------------------------------------
+    /// Supply, withdraw, repay or borrow against the borrow/lend markets.
+    #[from(skip)]
+    BorrowLend(BorrowLendAction),
+    /// Create a sub-account owned by the signer.
+    #[from(skip)]
+    CreateSubAccount {
+        /// Display name, 1 to 16 characters.
+        name: String,
+    },
+    /// Rename an existing sub-account.
+    #[from(skip)]
+    SubAccountModify(SubAccountModify),
+    /// Move perp USDC between the signer and one of its sub-accounts.
+    #[from(skip)]
+    SubAccountTransfer(SubAccountTransfer),
+    /// Move a spot token between the signer and one of its sub-accounts.
+    #[from(skip)]
+    SubAccountSpotTransfer(SubAccountSpotTransfer),
+    /// Create a vault led by the signer.
+    #[from(skip)]
+    CreateVault(CreateVault),
+    /// Change a vault's deposit and withdrawal policy.
+    #[from(skip)]
+    VaultModify(VaultModify),
+    /// Distribute USDC from a vault's leader balance to its depositors.
+    #[from(skip)]
+    VaultDistribute(VaultDistribute),
+    /// Set the display name shown on the leaderboard.
+    #[from(skip)]
+    SetDisplayName {
+        /// Name of at most 20 characters. Empty clears it.
+        #[serde(rename = "displayName")]
+        display_name: String,
+    },
+    /// Set the referrer whose code the signer was referred by. Can only be set once.
+    #[from(skip)]
+    SetReferrer {
+        /// Referral code, 1 to 20 characters.
+        code: String,
+    },
+    /// Claim a referral code for the signer to refer others with.
+    #[from(skip)]
+    RegisterReferrer {
+        /// Referral code, 1 to 20 characters.
+        code: String,
+    },
+    /// Spot account settings.
+    #[from(skip)]
+    SpotUser(SpotUserAction),
+    /// Link a HyperEVM contract to a HIP-1 token so the token can be traded on the EVM.
+    #[from(skip)]
+    FinalizeEvmContract(FinalizeEvmContract),
+    /// Validator signer action: jail or unjail the signer's own validator.
+    #[from(skip)]
+    #[serde(rename = "CSignerAction")]
+    CSignerAction(CSignerAction),
+    /// Validator action: register, change profile, or unregister.
+    #[from(skip)]
+    #[serde(rename = "CValidatorAction")]
+    CValidatorAction(CValidatorAction),
+    /// User-signed: link a staking account to a trading account.
+    #[from(skip)]
+    LinkStakingUser(LinkStakingUserAction),
+    /// User-signed: disable a trading account's staking link.
+    #[from(skip)]
+    StakingLinkDisableTradingUser(StakingLinkDisableTradingUserAction),
+    /// User-signed: enable or disable portfolio margin.
+    #[from(skip)]
+    UserPortfolioMargin(UserPortfolioMarginAction),
 }
 
 impl Action {
@@ -191,41 +302,167 @@ impl Action {
 }
 
 impl Action {
-    /// Returns the typed data for multisig signing, if applicable.
-    ///
-    /// Only EIP-712 typed data actions (UsdSend, SpotSend, SendAsset) support multisig typed data.
-    /// All other actions (orders, cancels, modifications) return None and use RMP hash signing.
+    /// Classify every action once for both ordinary and multisig signing.
+    fn user_signed_typed_data(&self, chain: Chain) -> Option<TypedData> {
+        let typed_data = match self {
+            // Actions signed over the msgpack hash wrapped in `Agent`.
+            Action::Order(_)
+            | Action::Modify(_)
+            | Action::BatchModify(_)
+            | Action::Cancel(_)
+            | Action::CancelByCloid(_)
+            | Action::ScheduleCancel(_)
+            | Action::EvmUserModify { .. }
+            | Action::UpdateIsolatedMargin(_)
+            | Action::UpdateLeverage(_)
+            | Action::VaultTransfer(_)
+            | Action::VaultModify(_)
+            | Action::VaultDistribute(_)
+            | Action::CreateVault(_)
+            | Action::CreateSubAccount { .. }
+            | Action::SubAccountModify(_)
+            | Action::SubAccountTransfer(_)
+            | Action::SubAccountSpotTransfer(_)
+            | Action::SetDisplayName { .. }
+            | Action::SetReferrer { .. }
+            | Action::RegisterReferrer { .. }
+            | Action::SpotUser(_)
+            | Action::BorrowLend(_)
+            | Action::FinalizeEvmContract(_)
+            | Action::CSignerAction(_)
+            | Action::CValidatorAction(_)
+            | Action::AgentSendAsset(_)
+            | Action::Noop
+            | Action::GossipPriorityBid(_)
+            | Action::AgentEnableDexAbstraction
+            | Action::AgentSetAbstraction { .. }
+            | Action::TwapOrder { .. }
+            | Action::TwapCancel { .. }
+            | Action::CDeposit { .. }
+            | Action::CWithdraw { .. }
+            | Action::ReserveRequestWeight { .. }
+            | Action::Hip3LiquidatorTransfer(_)
+            | Action::UserOutcome(_)
+            | Action::TopUpIsolatedOnlyMargin(_)
+            | Action::ClaimRewards
+            | Action::AuthorizeAqav2Role(_)
+            | Action::ValidatorL1Stream(_)
+            | Action::SpotDeploy(_)
+            | Action::PerpDeploy(_)
+            | Action::OutcomeDeploy(_)
+            | Action::ActivateOutcomeDeployer(_)
+            | Action::MultiSig(_) => return None,
+
+            // Actions signed as EIP-712 typed data.
+            Action::UsdSend(inner) => get_typed_data::<solidity::UsdSend>(inner, chain, None),
+            Action::SendAsset(inner) => get_typed_data::<solidity::SendAsset>(inner, chain, None),
+            Action::SendToEvmWithData(inner) => {
+                get_typed_data::<solidity::SendToEvmWithData>(inner, chain, None)
+            }
+            Action::SpotSend(inner) => get_typed_data::<solidity::SpotSend>(inner, chain, None),
+            Action::ApproveAgent(inner) => {
+                get_typed_data::<solidity::ApproveAgent>(inner, chain, None)
+            }
+            Action::ApproveBuilderFee(inner) => {
+                get_typed_data::<solidity::ApproveBuilderFee>(inner, chain, None)
+            }
+            Action::ConvertToMultiSigUser(inner) => {
+                get_typed_data::<solidity::ConvertToMultiSigUser>(inner, chain, None)
+            }
+            Action::UserDexAbstraction(inner) => {
+                get_typed_data::<solidity::UserDexAbstraction>(inner, chain, None)
+            }
+            Action::UserSetAbstraction(inner) => {
+                get_typed_data::<solidity::UserSetAbstraction>(inner, chain, None)
+            }
+            Action::UserPortfolioMargin(inner) => {
+                get_typed_data::<solidity::UserPortfolioMargin>(inner, chain, None)
+            }
+            Action::LinkStakingUser(inner) => {
+                get_typed_data::<solidity::LinkStakingUser>(inner, chain, None)
+            }
+            Action::StakingLinkDisableTradingUser(inner) => {
+                get_typed_data::<solidity::StakingLinkDisableTradingUser>(inner, chain, None)
+            }
+            Action::Withdraw3(inner) => get_typed_data::<solidity::Withdraw3>(inner, chain, None),
+            Action::UsdClassTransfer(inner) => {
+                get_typed_data::<solidity::UsdClassTransfer>(inner, chain, None)
+            }
+            Action::TokenDelegate(inner) => {
+                get_typed_data::<solidity::TokenDelegate>(inner, chain, None)
+            }
+        };
+        Some(typed_data)
+    }
+
+    /// Resolve typed data, including the request context for a multisig envelope.
+    fn signing_typed_data(
+        &self,
+        nonce: u64,
+        maybe_vault_address: Option<Address>,
+        expires_after: Option<u64>,
+        chain: Chain,
+    ) -> anyhow::Result<Option<TypedData>> {
+        if let Action::MultiSig(inner) = self {
+            let multi_sig_hash =
+                utils::rmp_hash(&inner, nonce, maybe_vault_address, expires_after)?;
+
+            #[derive(Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Envelope {
+                hyperliquid_chain: String,
+                multi_sig_action_hash: String,
+                nonce: u64,
+            }
+
+            let envelope = Envelope {
+                hyperliquid_chain: chain.to_string(),
+                multi_sig_action_hash: multi_sig_hash.to_string(),
+                nonce,
+            };
+
+            Ok(Some(get_typed_data::<solidity::SendMultiSig>(
+                &envelope, chain, None,
+            )))
+        } else {
+            Ok(self.user_signed_typed_data(chain))
+        }
+    }
+
+    /// The `Agent` struct an msgpack-signed action wraps its hash in.
+    fn agent(
+        &self,
+        nonce: u64,
+        maybe_vault_address: Option<Address>,
+        expires_after: Option<u64>,
+        chain: Chain,
+    ) -> anyhow::Result<solidity::Agent> {
+        let connection_id = self
+            .hash(nonce, maybe_vault_address, expires_after)
+            .map_err(|e| anyhow::anyhow!("Failed to hash action: {}", e))?;
+        Ok(solidity::Agent {
+            source: if chain.is_mainnet() { "a" } else { "b" }.to_string(),
+            connectionId: connection_id,
+        })
+    }
+
+    /// Add multisig fields to any user-signed action's EIP-712 schema.
+    /// L1 actions return `None` and use the multisig msgpack envelope instead.
     pub fn typed_data_multisig(
         &self,
         multi_sig_user: Address,
         lead: Address,
         chain: Chain,
     ) -> Option<TypedData> {
-        let multi_sig = Some((multi_sig_user, lead));
-
-        match self {
-            Action::UsdSend(inner) => Some(utils::get_typed_data::<solidity::multisig::UsdSend>(
-                inner, chain, multi_sig,
-            )),
-            Action::SpotSend(inner) => Some(utils::get_typed_data::<solidity::multisig::SpotSend>(
-                inner, chain, multi_sig,
-            )),
-            Action::SendAsset(inner) => Some(
-                utils::get_typed_data::<solidity::multisig::SendAsset>(inner, chain, multi_sig),
-            ),
-            Action::ConvertToMultiSigUser(inner) => Some(utils::get_typed_data::<
-                solidity::multisig::ConvertToMultiSigUser,
-            >(inner, chain, multi_sig)),
-            // All other actions use RMP signing
-            _ => None,
-        }
+        self.user_signed_typed_data(chain)
+            .map(|data| utils::multisig_typed_data(data, multi_sig_user, lead))
     }
 }
 
 /// API response wrapper.
 ///
 /// The `Ok` variant contains a successful response, while `Err` holds an error message.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", content = "response")]
 #[serde(rename_all = "camelCase")]
 pub enum Response {
@@ -236,12 +473,20 @@ pub enum Response {
 /// Successful API response data.
 ///
 /// Currently supports order responses and a default placeholder.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 #[serde(rename_all = "camelCase")]
 pub enum OkResponse {
-    Order { statuses: Vec<OrderResponseStatus> },
-    Cancel { statuses: Vec<OrderResponseStatus> },
+    Order {
+        statuses: Vec<OrderResponseStatus>,
+    },
+    Cancel {
+        statuses: Vec<OrderResponseStatus>,
+    },
+    /// Address of the sub-account just created. `data` is the bare address.
+    CreateSubAccount(Address),
+    /// Address of the vault just created. `data` is the bare address.
+    CreateVault(Address),
     // should be ok?
     Default,
 }
@@ -271,108 +516,14 @@ impl Action {
     ) -> anyhow::Result<ActionRequest> {
         let expires_after = maybe_expires_after.map(|after| after.timestamp_millis() as u64);
 
-        // Sign based on action type
-        let alloy_sig = match &self {
-            // RMP-based actions - use Agent wrapper
-            Action::Order(_)
-            | Action::BatchModify(_)
-            | Action::Cancel(_)
-            | Action::CancelByCloid(_)
-            | Action::ScheduleCancel(_)
-            | Action::EvmUserModify { .. }
-            | Action::UpdateIsolatedMargin(_)
-            | Action::UpdateLeverage(_)
-            | Action::VaultTransfer(_)
-            | Action::AgentSendAsset(_)
-            | Action::Noop
-            | Action::GossipPriorityBid(_)
-            | Action::AgentEnableDexAbstraction
-            | Action::AgentSetAbstraction { .. }
-            | Action::TwapOrder { .. }
-            | Action::TwapCancel { .. }
-            | Action::CDeposit { .. }
-            | Action::CWithdraw { .. }
-            | Action::ReserveRequestWeight { .. }
-            | Action::Hip3LiquidatorTransfer(_)
-            | Action::UserOutcome(_) => {
-                let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
-                let agent = solidity::Agent {
-                    source: if chain.is_mainnet() { "a" } else { "b" }.to_string(),
-                    connectionId: connection_id,
-                };
-                signer.sign_typed_data_sync(&agent, &CORE_MAINNET_EIP712_DOMAIN)?
-            }
-            // EIP-712 typed data actions
-            Action::UsdSend(inner) => {
-                let typed_data = get_typed_data::<solidity::UsdSend>(&inner, chain, None);
-                signer.sign_dynamic_typed_data_sync(&typed_data)?
-            }
-            Action::SendAsset(inner) => {
-                let typed_data = get_typed_data::<solidity::SendAsset>(&inner, chain, None);
-                signer.sign_dynamic_typed_data_sync(&typed_data)?
-            }
-            Action::SpotSend(inner) => {
-                let typed_data = get_typed_data::<solidity::SpotSend>(&inner, chain, None);
-                signer.sign_dynamic_typed_data_sync(&typed_data)?
-            }
-            Action::ApproveAgent(inner) => {
-                let typed_data = get_typed_data::<solidity::ApproveAgent>(&inner, chain, None);
-                signer.sign_dynamic_typed_data_sync(&typed_data)?
-            }
-            Action::ApproveBuilderFee(inner) => {
-                let typed_data = get_typed_data::<solidity::ApproveBuilderFee>(&inner, chain, None);
-                signer.sign_dynamic_typed_data_sync(&typed_data)?
-            }
-            Action::ConvertToMultiSigUser(inner) => {
-                let typed_data =
-                    get_typed_data::<solidity::ConvertToMultiSigUser>(&inner, chain, None);
-                signer.sign_dynamic_typed_data_sync(&typed_data)?
-            }
-            Action::UserDexAbstraction(inner) => {
-                let typed_data =
-                    get_typed_data::<solidity::UserDexAbstraction>(&inner, chain, None);
-                signer.sign_dynamic_typed_data_sync(&typed_data)?
-            }
-            Action::UserSetAbstraction(inner) => {
-                let typed_data =
-                    get_typed_data::<solidity::UserSetAbstraction>(&inner, chain, None);
-                signer.sign_dynamic_typed_data_sync(&typed_data)?
-            }
-            Action::Withdraw3(inner) => {
-                let typed_data = get_typed_data::<solidity::Withdraw3>(&inner, chain, None);
-                signer.sign_dynamic_typed_data_sync(&typed_data)?
-            }
-            Action::UsdClassTransfer(inner) => {
-                let typed_data = get_typed_data::<solidity::UsdClassTransfer>(&inner, chain, None);
-                signer.sign_dynamic_typed_data_sync(&typed_data)?
-            }
-            Action::TokenDelegate(inner) => {
-                let typed_data = get_typed_data::<solidity::TokenDelegate>(&inner, chain, None);
-                signer.sign_dynamic_typed_data_sync(&typed_data)?
-            }
-            // MultiSig - wrap in envelope
-            Action::MultiSig(inner) => {
-                let multsig_hash =
-                    utils::rmp_hash(&inner, nonce, maybe_vault_address, expires_after)?;
-
-                #[derive(Serialize)]
-                #[serde(rename_all = "camelCase")]
-                struct Envelope {
-                    hyperliquid_chain: String,
-                    multi_sig_action_hash: String,
-                    nonce: u64,
+        let alloy_sig =
+            match self.signing_typed_data(nonce, maybe_vault_address, expires_after, chain)? {
+                Some(typed_data) => signer.sign_dynamic_typed_data_sync(&typed_data)?,
+                None => {
+                    let agent = self.agent(nonce, maybe_vault_address, expires_after, chain)?;
+                    signer.sign_typed_data_sync(&agent, &CORE_MAINNET_EIP712_DOMAIN)?
                 }
-
-                let envelope = Envelope {
-                    hyperliquid_chain: chain.to_string(),
-                    multi_sig_action_hash: multsig_hash.to_string(),
-                    nonce,
-                };
-
-                let typed_data = get_typed_data::<solidity::SendMultiSig>(&envelope, chain, None);
-                signer.sign_dynamic_typed_data_sync(&typed_data)?
-            }
-        };
+            };
 
         let signature: Signature = alloy_sig.into();
 
@@ -400,109 +551,16 @@ impl Action {
     ) -> anyhow::Result<ActionRequest> {
         let expires_after = maybe_expires_after.map(|after| after.timestamp_millis() as u64);
 
-        // Sign based on action type
-        let alloy_sig = match &self {
-            // RMP-based actions - use Agent wrapper
-            Action::Order(_)
-            | Action::BatchModify(_)
-            | Action::Cancel(_)
-            | Action::CancelByCloid(_)
-            | Action::ScheduleCancel(_)
-            | Action::EvmUserModify { .. }
-            | Action::UpdateIsolatedMargin(_)
-            | Action::UpdateLeverage(_)
-            | Action::VaultTransfer(_)
-            | Action::AgentSendAsset(_)
-            | Action::Noop
-            | Action::GossipPriorityBid(_)
-            | Action::AgentEnableDexAbstraction
-            | Action::AgentSetAbstraction { .. }
-            | Action::TwapOrder { .. }
-            | Action::TwapCancel { .. }
-            | Action::CDeposit { .. }
-            | Action::CWithdraw { .. }
-            | Action::ReserveRequestWeight { .. }
-            | Action::Hip3LiquidatorTransfer(_)
-            | Action::UserOutcome(_) => {
-                let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
-                let agent = solidity::Agent {
-                    source: if chain.is_mainnet() { "a" } else { "b" }.to_string(),
-                    connectionId: connection_id,
-                };
-                signer
-                    .sign_typed_data(&agent, &CORE_MAINNET_EIP712_DOMAIN)
-                    .await?
-            }
-            // EIP-712 typed data actions
-            Action::UsdSend(inner) => {
-                let typed_data = get_typed_data::<solidity::UsdSend>(&inner, chain, None);
-                signer.sign_dynamic_typed_data(&typed_data).await?
-            }
-            Action::SendAsset(inner) => {
-                let typed_data = get_typed_data::<solidity::SendAsset>(&inner, chain, None);
-                signer.sign_dynamic_typed_data(&typed_data).await?
-            }
-            Action::SpotSend(inner) => {
-                let typed_data = get_typed_data::<solidity::SpotSend>(&inner, chain, None);
-                signer.sign_dynamic_typed_data(&typed_data).await?
-            }
-            Action::ApproveAgent(inner) => {
-                let typed_data = get_typed_data::<solidity::ApproveAgent>(&inner, chain, None);
-                signer.sign_dynamic_typed_data(&typed_data).await?
-            }
-            Action::ApproveBuilderFee(inner) => {
-                let typed_data = get_typed_data::<solidity::ApproveBuilderFee>(&inner, chain, None);
-                signer.sign_dynamic_typed_data(&typed_data).await?
-            }
-            Action::ConvertToMultiSigUser(inner) => {
-                let typed_data =
-                    get_typed_data::<solidity::ConvertToMultiSigUser>(&inner, chain, None);
-                signer.sign_dynamic_typed_data(&typed_data).await?
-            }
-            Action::UserDexAbstraction(inner) => {
-                let typed_data =
-                    get_typed_data::<solidity::UserDexAbstraction>(&inner, chain, None);
-                signer.sign_dynamic_typed_data(&typed_data).await?
-            }
-            Action::UserSetAbstraction(inner) => {
-                let typed_data =
-                    get_typed_data::<solidity::UserSetAbstraction>(&inner, chain, None);
-                signer.sign_dynamic_typed_data(&typed_data).await?
-            }
-            Action::Withdraw3(inner) => {
-                let typed_data = get_typed_data::<solidity::Withdraw3>(&inner, chain, None);
-                signer.sign_dynamic_typed_data(&typed_data).await?
-            }
-            Action::UsdClassTransfer(inner) => {
-                let typed_data = get_typed_data::<solidity::UsdClassTransfer>(&inner, chain, None);
-                signer.sign_dynamic_typed_data(&typed_data).await?
-            }
-            Action::TokenDelegate(inner) => {
-                let typed_data = get_typed_data::<solidity::TokenDelegate>(&inner, chain, None);
-                signer.sign_dynamic_typed_data(&typed_data).await?
-            }
-            Action::MultiSig(inner) => {
-                let multsig_hash =
-                    utils::rmp_hash(&inner, nonce, maybe_vault_address, expires_after)?;
-
-                #[derive(Serialize)]
-                #[serde(rename_all = "camelCase")]
-                struct Envelope {
-                    hyperliquid_chain: String,
-                    multi_sig_action_hash: String,
-                    nonce: u64,
+        let alloy_sig =
+            match self.signing_typed_data(nonce, maybe_vault_address, expires_after, chain)? {
+                Some(typed_data) => signer.sign_dynamic_typed_data(&typed_data).await?,
+                None => {
+                    let agent = self.agent(nonce, maybe_vault_address, expires_after, chain)?;
+                    let typed_data =
+                        TypedData::from_struct(&agent, Some(CORE_MAINNET_EIP712_DOMAIN.clone()));
+                    signer.sign_dynamic_typed_data(&typed_data).await?
                 }
-
-                let envelope = Envelope {
-                    hyperliquid_chain: chain.to_string(),
-                    multi_sig_action_hash: multsig_hash.to_string(),
-                    nonce,
-                };
-
-                let typed_data = get_typed_data::<solidity::SendMultiSig>(&envelope, chain, None);
-                signer.sign_dynamic_typed_data(&typed_data).await?
-            }
-        };
+            };
 
         let signature: Signature = alloy_sig.into();
 
@@ -527,31 +585,11 @@ impl Action {
         maybe_expires_after: Option<DateTime<Utc>>,
         chain: Chain,
     ) -> anyhow::Result<B256> {
-        match self {
-            // RMP-based actions - hash and wrap in Agent struct
-            Action::Order(_)
-            | Action::BatchModify(_)
-            | Action::Cancel(_)
-            | Action::CancelByCloid(_)
-            | Action::ScheduleCancel(_)
-            | Action::EvmUserModify { .. }
-            | Action::UpdateIsolatedMargin(_)
-            | Action::UpdateLeverage(_)
-            | Action::VaultTransfer(_)
-            | Action::AgentSendAsset(_)
-            | Action::Noop
-            | Action::GossipPriorityBid(_)
-            | Action::AgentEnableDexAbstraction
-            | Action::AgentSetAbstraction { .. }
-            | Action::TwapOrder { .. }
-            | Action::TwapCancel { .. }
-            | Action::CDeposit { .. }
-            | Action::CWithdraw { .. }
-            | Action::ReserveRequestWeight { .. }
-            | Action::Hip3LiquidatorTransfer(_)
-            | Action::UserOutcome(_) => {
-                let expires_after =
-                    maybe_expires_after.map(|after| after.timestamp_millis() as u64);
+        let expires_after = maybe_expires_after.map(|after| after.timestamp_millis() as u64);
+
+        match self.signing_typed_data(nonce, maybe_vault_address, expires_after, chain)? {
+            Some(typed_data) => Ok(typed_data.eip712_signing_hash()?),
+            None => {
                 let connection_id = self
                     .hash(nonce, maybe_vault_address, expires_after)
                     .map_err(|e| anyhow::anyhow!("Failed to hash action: {}", e))?;
@@ -559,77 +597,6 @@ impl Action {
                     chain,
                     connection_id,
                 ))
-            }
-            // EIP-712 typed data actions - get signing hash directly
-            Action::UsdSend(inner) => {
-                let typed_data = get_typed_data::<solidity::UsdSend>(&inner, chain, None);
-                Ok(typed_data.eip712_signing_hash()?)
-            }
-            Action::SendAsset(inner) => {
-                let typed_data = get_typed_data::<solidity::SendAsset>(&inner, chain, None);
-                Ok(typed_data.eip712_signing_hash()?)
-            }
-            Action::SpotSend(inner) => {
-                let typed_data = get_typed_data::<solidity::SpotSend>(&inner, chain, None);
-                Ok(typed_data.eip712_signing_hash()?)
-            }
-            Action::ApproveAgent(inner) => {
-                let typed_data = get_typed_data::<solidity::ApproveAgent>(&inner, chain, None);
-                Ok(typed_data.eip712_signing_hash()?)
-            }
-            Action::ApproveBuilderFee(inner) => {
-                let typed_data = get_typed_data::<solidity::ApproveBuilderFee>(&inner, chain, None);
-                Ok(typed_data.eip712_signing_hash()?)
-            }
-            Action::ConvertToMultiSigUser(inner) => {
-                let typed_data =
-                    get_typed_data::<solidity::ConvertToMultiSigUser>(&inner, chain, None);
-                Ok(typed_data.eip712_signing_hash()?)
-            }
-            Action::UserDexAbstraction(inner) => {
-                let typed_data =
-                    get_typed_data::<solidity::UserDexAbstraction>(&inner, chain, None);
-                Ok(typed_data.eip712_signing_hash()?)
-            }
-            Action::UserSetAbstraction(inner) => {
-                let typed_data =
-                    get_typed_data::<solidity::UserSetAbstraction>(&inner, chain, None);
-                Ok(typed_data.eip712_signing_hash()?)
-            }
-            Action::Withdraw3(inner) => {
-                let typed_data = get_typed_data::<solidity::Withdraw3>(&inner, chain, None);
-                Ok(typed_data.eip712_signing_hash()?)
-            }
-            Action::UsdClassTransfer(inner) => {
-                let typed_data = get_typed_data::<solidity::UsdClassTransfer>(&inner, chain, None);
-                Ok(typed_data.eip712_signing_hash()?)
-            }
-            Action::TokenDelegate(inner) => {
-                let typed_data = get_typed_data::<solidity::TokenDelegate>(&inner, chain, None);
-                Ok(typed_data.eip712_signing_hash()?)
-            }
-            Action::MultiSig(inner) => {
-                let expires_after =
-                    maybe_expires_after.map(|after| after.timestamp_millis() as u64);
-                let multsig_hash =
-                    utils::rmp_hash(&inner, nonce, maybe_vault_address, expires_after)?;
-
-                #[derive(Serialize)]
-                #[serde(rename_all = "camelCase")]
-                struct Envelope {
-                    hyperliquid_chain: String,
-                    multi_sig_action_hash: String,
-                    nonce: u64,
-                }
-
-                let envelope = Envelope {
-                    hyperliquid_chain: chain.to_string(),
-                    multi_sig_action_hash: multsig_hash.to_string(),
-                    nonce,
-                };
-
-                let typed_data = get_typed_data::<solidity::SendMultiSig>(&envelope, chain, None);
-                Ok(typed_data.eip712_signing_hash()?)
             }
         }
     }
@@ -847,6 +814,7 @@ pub struct ApproveAgent {
     ///
     /// An account can have 1 unnamed approved wallet,
     /// up to 3 named ones, and 2 named agents per subaccount.
+    #[serde(serialize_with = "utils::serialize_agent_name")]
     pub agent_name: Option<String>,
     /// Request nonce
     pub nonce: u64,
@@ -1146,59 +1114,83 @@ pub struct MultiSigPayload {
 }
 
 impl MultiSigPayload {
-    /// Computes the prehash for this multisig payload.
-    ///
-    /// Uses EIP-712 typed data for transfers or RMP+Agent for orders/cancels.
-    pub fn prehash(&self, nonce: u64, chain: Chain) -> anyhow::Result<B256> {
-        let multi_sig_user: Address = self.multi_sig_user.parse()?;
+    /// Compute the multisig L1 connection ID, including the outer request context.
+    fn connection_id(
+        &self,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<B256> {
+        let user: Address = self.multi_sig_user.parse()?;
         let lead: Address = self.outer_signer.parse()?;
+        Ok(utils::rmp_hash(
+            &(
+                const_hex::encode_prefixed(user.as_slice()),
+                const_hex::encode_prefixed(lead.as_slice()),
+                &self.action,
+            ),
+            nonce,
+            vault_address,
+            expires_after.map(|time| time.timestamp_millis() as u64),
+        )?)
+    }
 
-        // Determine signing method based on action type
-        if let Some(typed_data) = self.action.typed_data_multisig(multi_sig_user, lead, chain) {
-            // EIP-712 typed data actions (UsdSend, SpotSend, SendAsset, ConvertToMultiSigUser)
-            Ok(typed_data.eip712_signing_hash()?)
+    /// Compute the signing hash without a vault or expiry.
+    pub fn prehash(&self, nonce: u64, chain: Chain) -> anyhow::Result<B256> {
+        self.prehash_with_context(nonce, None, None, chain)
+    }
+
+    /// Compute the signing hash using the same vault and expiry as the outer request.
+    pub fn prehash_with_context(
+        &self,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+        chain: Chain,
+    ) -> anyhow::Result<B256> {
+        if let Some(data) = self.action.typed_data_multisig(
+            self.multi_sig_user.parse()?,
+            self.outer_signer.parse()?,
+            chain,
+        ) {
+            Ok(data.eip712_signing_hash()?)
         } else {
-            // RMP-based actions (orders, cancels, modifications)
-            let connection_id = utils::rmp_hash(
-                &(&self.multi_sig_user, &self.outer_signer, &self.action),
-                nonce,
-                None,
-                None,
-            )?;
             Ok(crate::hypercore::signing::agent_signing_hash(
                 chain,
-                connection_id,
+                self.connection_id(nonce, vault_address, expires_after)?,
             ))
         }
     }
 
-    /// Signs this multisig payload synchronously and returns a signature.
-    ///
-    /// Uses EIP-712 typed data for transfers or RMP+Agent for orders/cancels.
+    /// Sign synchronously without a vault or expiry.
     pub fn sign_sync<S: SignerSync>(
         &self,
         signer: &S,
         nonce: u64,
         chain: Chain,
     ) -> anyhow::Result<Signature> {
-        let multi_sig_user: Address = self.multi_sig_user.parse()?;
-        let lead: Address = self.outer_signer.parse()?;
+        self.sign_sync_with_context(signer, nonce, None, None, chain)
+    }
 
-        // Determine signing method based on action type
-        if let Some(typed_data) = self.action.typed_data_multisig(multi_sig_user, lead, chain) {
-            // EIP-712 typed data actions (UsdSend, SpotSend, SendAsset, ConvertToMultiSigUser)
-            Ok(signer.sign_dynamic_typed_data_sync(&typed_data)?.into())
+    /// Sign synchronously using the outer request's vault and expiry.
+    pub fn sign_sync_with_context<S: SignerSync>(
+        &self,
+        signer: &S,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+        chain: Chain,
+    ) -> anyhow::Result<Signature> {
+        if let Some(data) = self.action.typed_data_multisig(
+            self.multi_sig_user.parse()?,
+            self.outer_signer.parse()?,
+            chain,
+        ) {
+            Ok(signer.sign_dynamic_typed_data_sync(&data)?.into())
         } else {
-            // RMP-based actions (orders, cancels, modifications)
-            let connection_id = utils::rmp_hash(
-                &(&self.multi_sig_user, &self.outer_signer, &self.action),
-                nonce,
-                None,
-                None,
-            )?;
             let agent = solidity::Agent {
                 source: if chain.is_mainnet() { "a" } else { "b" }.to_string(),
-                connectionId: connection_id,
+                connectionId: self.connection_id(nonce, vault_address, expires_after)?,
             };
             Ok(signer
                 .sign_typed_data_sync(&agent, &CORE_MAINNET_EIP712_DOMAIN)?
@@ -1206,75 +1198,66 @@ impl MultiSigPayload {
         }
     }
 
-    /// Signs this multisig payload asynchronously and returns a signature.
-    ///
-    /// Uses EIP-712 typed data for transfers or RMP+Agent for orders/cancels.
+    /// Sign asynchronously without a vault or expiry.
     pub async fn sign<S: Signer + Send + Sync>(
         &self,
         signer: &S,
         nonce: u64,
         chain: Chain,
     ) -> anyhow::Result<Signature> {
-        let multi_sig_user: Address = self.multi_sig_user.parse()?;
-        let lead: Address = self.outer_signer.parse()?;
+        self.sign_with_context(signer, nonce, None, None, chain)
+            .await
+    }
 
-        // Determine signing method based on action type
-        if let Some(typed_data) = self.action.typed_data_multisig(multi_sig_user, lead, chain) {
-            // EIP-712 typed data actions (UsdSend, SpotSend, SendAsset, ConvertToMultiSigUser)
-            Ok(signer.sign_dynamic_typed_data(&typed_data).await?.into())
+    /// Sign asynchronously using the outer request's vault and expiry.
+    pub async fn sign_with_context<S: Signer + Send + Sync>(
+        &self,
+        signer: &S,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+        chain: Chain,
+    ) -> anyhow::Result<Signature> {
+        if let Some(data) = self.action.typed_data_multisig(
+            self.multi_sig_user.parse()?,
+            self.outer_signer.parse()?,
+            chain,
+        ) {
+            Ok(signer.sign_dynamic_typed_data(&data).await?.into())
         } else {
-            // RMP-based actions (orders, cancels, modifications)
-            let connection_id = utils::rmp_hash(
-                &(&self.multi_sig_user, &self.outer_signer, &self.action),
-                nonce,
-                None,
-                None,
-            )?;
-            let agent = solidity::Agent {
-                source: if chain.is_mainnet() { "a" } else { "b" }.to_string(),
-                connectionId: connection_id,
-            };
-            Ok(signer
-                .sign_typed_data(&agent, &CORE_MAINNET_EIP712_DOMAIN)
-                .await?
-                .into())
+            crate::hypercore::signing::sign_l1_action(
+                signer,
+                chain,
+                self.connection_id(nonce, vault_address, expires_after)?,
+            )
+            .await
         }
     }
 
-    /// Recovers the signer's address from a multisig action signature.
-    ///
-    /// Uses EIP-712 typed data for transfers or RMP+Agent for orders/cancels.
+    /// Recover a signature made without a vault or expiry.
     pub fn recover(
         &self,
         signature: &Signature,
         nonce: u64,
         chain: Chain,
     ) -> anyhow::Result<Address> {
-        let multi_sig_user: Address = self.multi_sig_user.parse()?;
-        let lead: Address = self.outer_signer.parse()?;
+        self.recover_with_context(signature, nonce, None, None, chain)
+    }
 
-        let recid = RecoveryId::from_byte(signature.v as u8 - 27_u8)
-            .ok_or_else(|| anyhow::anyhow!("unable to convert recovery_id: {}", signature.v))?;
-        let sig = alloy::signers::Signature::new(signature.r, signature.s, recid.is_y_odd());
-
-        // Determine signing method based on action type
-        let prehash = if let Some(typed_data) =
-            self.action.typed_data_multisig(multi_sig_user, lead, chain)
-        {
-            // EIP-712 typed data actions (UsdSend, SpotSend, SendAsset, ConvertToMultiSigUser)
-            typed_data.eip712_signing_hash()?
-        } else {
-            // RMP-based actions (orders, cancels, modifications)
-            let connection_id = utils::rmp_hash(
-                &(&self.multi_sig_user, &self.outer_signer, &self.action),
-                nonce,
-                None,
-                None,
-            )?;
-            crate::hypercore::signing::agent_signing_hash(chain, connection_id)
-        };
-
-        Ok(sig.recover_address_from_prehash(&prehash)?)
+    /// Recover a signature using the outer request's vault and expiry.
+    pub fn recover_with_context(
+        &self,
+        signature: &Signature,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+        chain: Chain,
+    ) -> anyhow::Result<Address> {
+        let parity = alloy::primitives::normalize_v(signature.v)
+            .ok_or_else(|| anyhow::anyhow!("invalid signature recovery id: {}", signature.v))?;
+        let sig = alloy::signers::Signature::new(signature.r, signature.s, parity);
+        let hash = self.prehash_with_context(nonce, vault_address, expires_after, chain)?;
+        Ok(sig.recover_address_from_prehash(&hash)?)
     }
 }
 
@@ -1345,16 +1328,440 @@ pub struct UsdClassTransferAction {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenDelegateAction {
+    /// Signature chain ID used for EIP-712 signing.
+    pub signature_chain_id: String,
+    /// Target Hyperliquid network.
+    pub hyperliquid_chain: Chain,
     /// Validator address.
     #[serde(
         serialize_with = "crate::hypercore::utils::serialize_address_as_hex",
         deserialize_with = "crate::hypercore::utils::deserialize_address_from_hex"
     )]
     pub validator: Address,
-    /// `true` to undelegate, `false` to delegate.
-    pub is_undelegate: bool,
     /// Amount in wei of native token.
     pub wei: u64,
+    /// `true` to undelegate, `false` to delegate.
+    pub is_undelegate: bool,
+    /// Request nonce, matching the outer request.
+    pub nonce: u64,
+}
+
+/// Encoding of [`SendToEvmWithDataAction::destination_recipient`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AddressEncoding {
+    /// 20-byte address in `0x`-prefixed hex, the usual EVM form.
+    Hex,
+    /// Base58-encoded address, for destination chains that use it.
+    Base58,
+}
+
+/// Transfer a token from Core to the EVM with an extra data payload.
+///
+/// The destination contract must implement `ICoreReceiveWithData`. Unlike
+/// [`crate::hypercore::HttpClient::transfer_to_evm`], this carries `data` to the recipient and can
+/// target a chain other than HyperEVM.
+///
+/// This is a user-signed EIP-712 action (`HyperliquidTransaction:SendToEvmWithData`).
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#send-to-evm-with-data>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SendToEvmWithDataAction {
+    /// Signature chain ID.
+    ///
+    /// For arbitrum use [`crate::hypercore::ARBITRUM_MAINNET_CHAIN_ID`] or [`crate::hypercore::ARBITRUM_TESTNET_CHAIN_ID`].
+    pub signature_chain_id: String,
+    /// The chain this action is being executed on.
+    pub hyperliquid_chain: Chain,
+    /// Token identifier, e.g. `"PURR:0xc4bf3f870c0e9465323c0b6ed28096c2"`.
+    pub token: String,
+    /// Amount of the token to send (not in wei).
+    #[serde(with = "rust_decimal::serde::str")]
+    pub amount: Decimal,
+    /// Name of the perp DEX to transfer from. Empty for the spot balance.
+    pub source_dex: String,
+    /// Recipient on the destination chain, in [`Self::address_encoding`] format.
+    pub destination_recipient: String,
+    /// How [`Self::destination_recipient`] is encoded.
+    pub address_encoding: AddressEncoding,
+    /// Destination chain ID.
+    pub destination_chain_id: u32,
+    /// Gas limit for execution on the destination chain.
+    pub gas_limit: u64,
+    /// Data payload passed to the receiving contract. Empty is `0x`.
+    pub data: Bytes,
+    /// Request nonce, must match the outer nonce.
+    pub nonce: u64,
+}
+
+/// Add isolated margin to reach a target leverage.
+///
+/// The alternative to [`UpdateIsolatedMargin`], which moves a fixed USDC amount instead.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#update-isolated-margin>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TopUpIsolatedOnlyMargin {
+    /// Asset index.
+    pub asset: u32,
+    /// Target leverage.
+    #[serde(with = "rust_decimal::serde::str")]
+    pub leverage: Decimal,
+}
+
+/// The role being authorized by [`Action::AuthorizeAqav2Role`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Aqav2Role {
+    /// Technical operator role.
+    Technical,
+    /// Treasury operator role.
+    Treasury,
+}
+
+/// Authorize an AQAv2 role for an aligned quote asset.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#authorize-aqav2-role>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorizeAqav2Role {
+    /// Token index, e.g. `0` for USDC.
+    pub token: u32,
+    /// The role to authorize.
+    pub role: Aqav2Role,
+}
+
+/// Validator vote on the risk-free rate for an aligned quote asset.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#validator-vote-on-risk-free-rate-for-aligned-quote-asset>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatorL1Stream {
+    /// Annualized risk-free rate, e.g. `0.04` for 4%.
+    #[serde(with = "rust_decimal::serde::str")]
+    pub risk_free_rate: Decimal,
+}
+
+/// Replace a single resting order (`modify`).
+///
+/// The batch form is [`BatchModify`], which carries the same `always_place` flag.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#modify-an-order>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ModifyAction {
+    /// Order to replace, either a numeric `oid` or a client-supplied `cloid`.
+    #[serde(with = "crate::hypercore::utils::oid_or_cloid")]
+    pub oid: OidOrCloid,
+    /// Replacement order.
+    pub order: OrderRequest,
+    /// Place the new order even if the cancel failed.
+    ///
+    /// When `false` the new order must be a non-trigger ALO, or a non-executable GTC whose TIF
+    /// is then overridden to ALO. Serialized as `a`, and omitted when `false`: the exchange
+    /// rejects an action hashed with `a: false`.
+    #[serde(
+        rename = "a",
+        default,
+        skip_serializing_if = "std::ops::Not::not",
+        alias = "alwaysPlace"
+    )]
+    pub always_place: bool,
+}
+
+/// Borrow/lend market operation (`borrowLend`).
+///
+/// Undocumented, live on mainnet.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BorrowLendAction {
+    /// Which side of the market to act on.
+    pub operation: BorrowLendOperation,
+    /// Token index.
+    pub token: u32,
+    /// Amount, or `None` for the maximum available.
+    #[serde(with = "rust_decimal::serde::str_option")]
+    pub amount: Option<Decimal>,
+}
+
+/// The operation of a [`BorrowLendAction`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BorrowLendOperation {
+    /// Lend tokens into the reserve.
+    Supply,
+    /// Take lent tokens back out of the reserve.
+    Withdraw,
+    /// Pay back borrowed tokens.
+    Repay,
+    /// Borrow tokens against collateral.
+    Borrow,
+}
+
+/// Rename a sub-account (`subAccountModify`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SubAccountModify {
+    /// The sub-account to rename.
+    pub sub_account_user: Address,
+    /// New display name, 1 to 16 characters.
+    pub name: String,
+}
+
+/// Move perp USDC to or from a sub-account (`subAccountTransfer`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SubAccountTransfer {
+    /// The sub-account on the other side of the transfer.
+    pub sub_account_user: Address,
+    /// `true` moves funds into the sub-account, `false` moves them back out.
+    pub is_deposit: bool,
+    /// Amount in 1e-6 USDC units.
+    pub usd: u64,
+}
+
+/// Move a spot token to or from a sub-account (`subAccountSpotTransfer`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SubAccountSpotTransfer {
+    /// The sub-account on the other side of the transfer.
+    pub sub_account_user: Address,
+    /// `true` moves funds into the sub-account, `false` moves them back out.
+    pub is_deposit: bool,
+    /// Token identifier in `NAME:0x...` form, as returned by `spotMeta`.
+    pub token: String,
+    /// Amount as a decimal string.
+    #[serde(with = "rust_decimal::serde::str")]
+    pub amount: Decimal,
+}
+
+/// Create a vault (`createVault`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateVault {
+    /// Vault name, 3 to 50 characters.
+    pub name: String,
+    /// Vault description, 10 to 250 characters.
+    pub description: String,
+    /// Leader's initial deposit in 1e-6 USDC units. At least 100 USDC.
+    pub initial_usd: u64,
+    /// Creation nonce. Carried inside the action as well as alongside it.
+    pub nonce: u64,
+}
+
+/// Change a vault's deposit and withdrawal policy (`vaultModify`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultModify {
+    /// The vault to change.
+    pub vault_address: Address,
+    /// Whether new deposits are accepted. `None` leaves it unchanged.
+    pub allow_deposits: Option<bool>,
+    /// Whether a withdrawal always closes the depositor's share of open positions.
+    /// `None` leaves it unchanged.
+    pub always_close_on_withdraw: Option<bool>,
+}
+
+/// Pay USDC from a vault leader's balance out to depositors (`vaultDistribute`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultDistribute {
+    /// The vault distributing.
+    pub vault_address: Address,
+    /// Amount in 1e-6 USDC units. `0` closes the vault.
+    pub usd: u64,
+}
+
+/// Spot account settings (`spotUser`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SpotUserAction {
+    /// Opt in or out of automatic dusting of small spot balances.
+    pub toggle_spot_dusting: ToggleSpotDusting,
+}
+
+/// The dusting setting carried by [`SpotUserAction`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct ToggleSpotDusting {
+    /// `true` stops the exchange dusting small balances into USDC.
+    pub opt_out: bool,
+}
+
+/// Link a HyperEVM contract to a HIP-1 token (`finalizeEvmContract`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalizeEvmContract {
+    /// Token index.
+    pub token: u32,
+    /// How ownership of the contract is proven.
+    pub input: FinalizeEvmContractInput,
+}
+
+/// The ownership proof carried by [`FinalizeEvmContract`].
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum FinalizeEvmContractInput {
+    /// The contract was deployed by an EOA at this nonce.
+    Create {
+        /// Deployment nonce of the EOA.
+        nonce: u64,
+    },
+    /// The deployer address is in the contract's first storage slot.
+    #[serde(rename = "firstStorageSlot")]
+    FirstStorageSlot,
+    /// The deployer address is in a custom storage slot.
+    #[serde(rename = "customStorageSlot")]
+    CustomStorageSlot,
+}
+
+/// Validator signer action (`CSignerAction`).
+///
+/// Serializes as `{"type": "CSignerAction", "<variant>": null}`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum CSignerAction {
+    /// Take the signer's validator out of consensus.
+    JailSelf(()),
+    /// Return the signer's validator to consensus.
+    UnjailSelf(()),
+}
+
+/// Validator action (`CValidatorAction`).
+///
+/// Unlike the rest of the exchange API these payloads use snake_case field names, and the
+/// node address is keyed `Ip` with a capital I.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum CValidatorAction {
+    /// Register a new validator.
+    Register(ValidatorRegistration),
+    /// Change an existing validator's profile.
+    ChangeProfile(ValidatorProfileChange),
+    /// Deregister the signer's validator. Serializes as `{"unregister": null}`.
+    Unregister(()),
+}
+
+/// A new validator's registration, carried by [`CValidatorAction::Register`].
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ValidatorRegistration {
+    /// Public profile shown in the validator list.
+    pub profile: ValidatorProfile,
+    /// Whether the validator starts in consensus rather than jailed.
+    pub unjailed: bool,
+    /// Self-delegated stake in wei.
+    pub initial_wei: u64,
+}
+
+/// A validator's public profile, as given at registration.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ValidatorProfile {
+    /// Consensus node address.
+    pub node_ip: ValidatorNodeIp,
+    /// Display name.
+    pub name: String,
+    /// Description.
+    pub description: String,
+    /// Whether delegations from others are refused.
+    pub delegations_disabled: bool,
+    /// Commission rate in basis points.
+    pub commission_bps: u64,
+    /// Address authorized to sign consensus messages.
+    pub signer: Address,
+}
+
+/// A change to an existing validator's profile, carried by
+/// [`CValidatorAction::ChangeProfile`]. Every `None` field is left as it was.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ValidatorProfileChange {
+    /// Consensus node address.
+    pub node_ip: Option<ValidatorNodeIp>,
+    /// Display name.
+    pub name: Option<String>,
+    /// Description.
+    pub description: Option<String>,
+    /// Whether the validator is in consensus.
+    pub unjailed: bool,
+    /// Whether delegations from others are refused.
+    pub disable_delegations: Option<bool>,
+    /// Commission rate in basis points.
+    pub commission_bps: Option<u64>,
+    /// Address authorized to sign consensus messages.
+    pub signer: Option<Address>,
+}
+
+/// A validator's consensus node address.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ValidatorNodeIp {
+    /// IP address of the node.
+    #[serde(rename = "Ip")]
+    pub ip: String,
+}
+
+/// User-signed link of a staking account to a trading account (`linkStakingUser`).
+///
+/// EIP-712 type `HyperliquidTransaction:LinkStakingUser`. Sent twice: once by the staking
+/// account with `is_finalize = false`, then by the trading account with `is_finalize = true`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkStakingUserAction {
+    /// Signature chain ID (e.g., `"0x66eee"` for testnet, `"0xa4b1"` for mainnet).
+    pub signature_chain_id: String,
+    /// The chain this action is being executed on.
+    pub hyperliquid_chain: Chain,
+    /// The account on the other side of the link (lowercase hex).
+    #[serde(
+        serialize_with = "crate::hypercore::utils::serialize_address_as_hex",
+        deserialize_with = "crate::hypercore::utils::deserialize_address_from_hex"
+    )]
+    pub user: Address,
+    /// `false` proposes the link, `true` accepts it.
+    pub is_finalize: bool,
+    /// Request nonce (timestamp in ms).
+    pub nonce: u64,
+}
+
+/// User-signed removal of a trading account's staking link
+/// (`stakingLinkDisableTradingUser`).
+///
+/// EIP-712 type `HyperliquidTransaction:StakingLinkDisableTradingUser`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct StakingLinkDisableTradingUserAction {
+    /// Signature chain ID (e.g., `"0x66eee"` for testnet, `"0xa4b1"` for mainnet).
+    pub signature_chain_id: String,
+    /// The chain this action is being executed on.
+    pub hyperliquid_chain: Chain,
+    /// The trading account to unlink (lowercase hex).
+    #[serde(
+        serialize_with = "crate::hypercore::utils::serialize_address_as_hex",
+        deserialize_with = "crate::hypercore::utils::deserialize_address_from_hex"
+    )]
+    pub trading_user: Address,
+    /// Request nonce (timestamp in ms).
+    pub nonce: u64,
+}
+
+/// User-signed portfolio margin toggle (`userPortfolioMargin`).
+///
+/// EIP-712 type `HyperliquidTransaction:UserPortfolioMargin`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserPortfolioMarginAction {
+    /// Signature chain ID (e.g., `"0x66eee"` for testnet, `"0xa4b1"` for mainnet).
+    pub signature_chain_id: String,
+    /// The chain this action is being executed on.
+    pub hyperliquid_chain: Chain,
+    /// The account to change (lowercase hex).
+    #[serde(
+        serialize_with = "crate::hypercore::utils::serialize_address_as_hex",
+        deserialize_with = "crate::hypercore::utils::deserialize_address_from_hex"
+    )]
+    pub user: Address,
+    /// `true` enables portfolio margin.
+    pub enabled: bool,
+    /// Request nonce (timestamp in ms).
+    pub nonce: u64,
 }
 
 /// HIP-3 backstop liquidator transfer.
@@ -1522,6 +1929,198 @@ mod tests {
         assert_eq!(
             address,
             address!("0x5eCb62791B22A3108367c2A2024019Ee7eA88431")
+        );
+    }
+
+    #[test]
+    fn send_to_evm_with_data_serialization() {
+        use rust_decimal::dec;
+
+        let action = Action::SendToEvmWithData(SendToEvmWithDataAction {
+            signature_chain_id: "0xa4b1".to_string(),
+            hyperliquid_chain: Chain::Mainnet,
+            token: "USDC".to_string(),
+            amount: dec!(1),
+            source_dex: String::new(),
+            destination_recipient: "0x0d1d9635d0640821d15e323ac8adadfa9c111414".to_string(),
+            address_encoding: AddressEncoding::Hex,
+            destination_chain_id: 42161,
+            gas_limit: 200_000,
+            data: Bytes::default(),
+            nonce: 1690393044548,
+        });
+
+        assert_eq!(
+            serde_json::to_string(&action).unwrap(),
+            r#"{"type":"sendToEvmWithData","signatureChainId":"0xa4b1","hyperliquidChain":"Mainnet","token":"USDC","amount":"1","sourceDex":"","destinationRecipient":"0x0d1d9635d0640821d15e323ac8adadfa9c111414","addressEncoding":"hex","destinationChainId":42161,"gasLimit":200000,"data":"0x","nonce":1690393044548}"#
+        );
+    }
+
+    /// The EIP-712 payload must resolve against `HyperliquidTransaction:SendToEvmWithData`
+    /// with the field order the exchange expects, and `data` must coerce from its hex form.
+    #[test]
+    fn send_to_evm_with_data_prehash() {
+        use rust_decimal::dec;
+
+        let action = Action::SendToEvmWithData(SendToEvmWithDataAction {
+            signature_chain_id: "0xa4b1".to_string(),
+            hyperliquid_chain: Chain::Mainnet,
+            token: "USDC".to_string(),
+            amount: dec!(1),
+            source_dex: String::new(),
+            destination_recipient: "0x0d1d9635d0640821d15e323ac8adadfa9c111414".to_string(),
+            address_encoding: AddressEncoding::Hex,
+            destination_chain_id: 42161,
+            gas_limit: 200_000,
+            data: Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]),
+            nonce: 1690393044548,
+        });
+
+        let typed_data = match &action {
+            Action::SendToEvmWithData(inner) => {
+                get_typed_data::<solidity::SendToEvmWithData>(inner, Chain::Mainnet, None)
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            typed_data.primary_type,
+            "HyperliquidTransaction:SendToEvmWithData"
+        );
+        assert_eq!(
+            typed_data.encode_type().unwrap(),
+            "HyperliquidTransaction:SendToEvmWithData(string hyperliquidChain,string token,\
+             string amount,string sourceDex,string destinationRecipient,string addressEncoding,\
+             uint32 destinationChainId,uint64 gasLimit,bytes data,uint64 nonce)"
+        );
+        // Resolving the hash exercises coercion of every field, `data` included.
+        action
+            .prehash(1690393044548, None, None, Chain::Mainnet)
+            .unwrap();
+    }
+
+    #[test]
+    fn l1_action_serialization() {
+        use rust_decimal::dec;
+
+        assert_eq!(
+            serde_json::to_string(&Action::ClaimRewards).unwrap(),
+            r#"{"type":"claimRewards"}"#
+        );
+
+        assert_eq!(
+            serde_json::to_string(&Action::TopUpIsolatedOnlyMargin(TopUpIsolatedOnlyMargin {
+                asset: 4,
+                leverage: dec!(12.5),
+            }))
+            .unwrap(),
+            r#"{"type":"topUpIsolatedOnlyMargin","asset":4,"leverage":"12.5"}"#
+        );
+
+        assert_eq!(
+            serde_json::to_string(&Action::AuthorizeAqav2Role(AuthorizeAqav2Role {
+                token: 0,
+                role: Aqav2Role::Treasury,
+            }))
+            .unwrap(),
+            r#"{"type":"authorizeAqav2Role","token":0,"role":"treasury"}"#
+        );
+
+        assert_eq!(
+            serde_json::to_string(&Action::ValidatorL1Stream(ValidatorL1Stream {
+                risk_free_rate: dec!(0.04),
+            }))
+            .unwrap(),
+            r#"{"type":"validatorL1Stream","riskFreeRate":"0.04"}"#
+        );
+    }
+
+    /// `f` is omitted entirely when false, which keeps the msgpack signing hash unchanged
+    /// for callers that never opt into fast cancels.
+    /// The pre-`fast` wire shape, as it existed before the field was added.
+    #[derive(serde::Serialize)]
+    struct OldBatchCancel {
+        cancels: Vec<crate::hypercore::types::Cancel>,
+    }
+
+    #[derive(serde::Serialize)]
+    #[serde(tag = "type", rename_all = "camelCase")]
+    enum OldAction {
+        Cancel(OldBatchCancel),
+    }
+
+    /// Adding `fast` must not change the msgpack bytes for existing callers, since the
+    /// signature is taken over that encoding.
+    #[test]
+    fn fast_false_is_byte_identical_to_the_old_shape() {
+        let cancels = vec![
+            crate::hypercore::types::Cancel { asset: 1, oid: 42 },
+            crate::hypercore::types::Cancel { asset: 7, oid: 99 },
+        ];
+
+        let old = rmp_serde::to_vec_named(&OldAction::Cancel(OldBatchCancel {
+            cancels: cancels.clone(),
+        }))
+        .unwrap();
+
+        let new = rmp_serde::to_vec_named(&Action::Cancel(BatchCancel {
+            cancels: cancels.clone(),
+            fast: false,
+        }))
+        .unwrap();
+
+        assert_eq!(old, new, "fast:false changed the signing bytes");
+
+        let fast = rmp_serde::to_vec_named(&Action::Cancel(BatchCancel {
+            cancels,
+            fast: true,
+        }))
+        .unwrap();
+        assert_ne!(old, fast, "fast:true should change the signing bytes");
+    }
+
+    #[test]
+    fn cancel_fast_flag_is_omitted_when_false() {
+        let cancels = vec![crate::hypercore::types::Cancel { asset: 1, oid: 42 }];
+
+        let slow = Action::Cancel(BatchCancel {
+            cancels: cancels.clone(),
+            fast: false,
+        });
+        assert_eq!(
+            serde_json::to_string(&slow).unwrap(),
+            r#"{"type":"cancel","cancels":[{"a":1,"o":42}]}"#
+        );
+
+        let fast = Action::Cancel(BatchCancel {
+            cancels,
+            fast: true,
+        });
+        assert_eq!(
+            serde_json::to_string(&fast).unwrap(),
+            r#"{"type":"cancel","cancels":[{"a":1,"o":42}],"f":true}"#
+        );
+    }
+
+    /// `destination` is omitted when absent so existing single-argument reservations sign
+    /// exactly as they did before the field was added.
+    #[test]
+    fn reserve_request_weight_destination_is_optional() {
+        assert_eq!(
+            serde_json::to_string(&Action::ReserveRequestWeight {
+                weight: 10,
+                destination: None,
+            })
+            .unwrap(),
+            r#"{"type":"reserveRequestWeight","weight":10}"#
+        );
+
+        assert_eq!(
+            serde_json::to_string(&Action::ReserveRequestWeight {
+                weight: 10,
+                destination: Some(address!("0x0D1d9635D0640821d15e323ac8AdADfA9c111414")),
+            })
+            .unwrap(),
+            r#"{"type":"reserveRequestWeight","weight":10,"destination":"0x0d1d9635d0640821d15e323ac8adadfa9c111414"}"#
         );
     }
 
@@ -1797,5 +2396,343 @@ mod tests {
         );
         assert!(AbstractionMode::from_api_str("unknown").is_err());
         assert!(AbstractionMode::default().is_standard());
+    }
+
+    #[test]
+    fn modify_omits_always_place_when_false() {
+        use rust_decimal::dec;
+
+        use crate::hypercore::types::{Cloid, OrderTypePlacement, TimeInForce};
+
+        let order = || OrderRequest {
+            asset: 0,
+            is_buy: true,
+            limit_px: dec!(1),
+            sz: dec!(1),
+            reduce_only: false,
+            order_type: OrderTypePlacement::Limit {
+                tif: TimeInForce::Alo,
+            },
+            cloid: Cloid::default(),
+        };
+
+        // The exchange rejects an action hashed with `a: false`, so the field must vanish.
+        let action = Action::Modify(ModifyAction {
+            oid: either::Either::Left(1),
+            order: order(),
+            always_place: false,
+        });
+        let json = serde_json::to_value(&action).unwrap();
+        assert_eq!(json["type"], "modify");
+        assert!(json.get("a").is_none(), "a must be omitted when false");
+
+        let action = Action::Modify(ModifyAction {
+            oid: either::Either::Left(1),
+            order: order(),
+            always_place: true,
+        });
+        assert_eq!(serde_json::to_value(&action).unwrap()["a"], true);
+
+        let batch = Action::BatchModify(crate::hypercore::types::BatchModify {
+            modifies: vec![],
+            always_place: false,
+        });
+        assert!(
+            serde_json::to_value(&batch).unwrap().get("a").is_none(),
+            "a must be omitted when false"
+        );
+    }
+
+    #[test]
+    fn undocumented_actions_serialize_as_expected() {
+        use rust_decimal::dec;
+
+        let action = Action::BorrowLend(BorrowLendAction {
+            operation: BorrowLendOperation::Supply,
+            token: 0,
+            amount: Some(dec!(1.5)),
+        });
+        assert_eq!(
+            serde_json::to_value(&action).unwrap(),
+            serde_json::json!({
+                "type": "borrowLend", "operation": "supply", "token": 0, "amount": "1.5"
+            })
+        );
+
+        // `null` amount means "the maximum available", so it must be sent, not skipped.
+        let action = Action::BorrowLend(BorrowLendAction {
+            operation: BorrowLendOperation::Repay,
+            token: 3,
+            amount: None,
+        });
+        assert_eq!(
+            serde_json::to_value(&action).unwrap(),
+            serde_json::json!({
+                "type": "borrowLend", "operation": "repay", "token": 3, "amount": null
+            })
+        );
+
+        // The validator payloads are snake_case, and the node address key is capitalized.
+        let action =
+            Action::CValidatorAction(CValidatorAction::ChangeProfile(ValidatorProfileChange {
+                node_ip: Some(ValidatorNodeIp {
+                    ip: "1.2.3.4".to_string(),
+                }),
+                name: None,
+                description: None,
+                unjailed: true,
+                disable_delegations: None,
+                commission_bps: Some(500),
+                signer: None,
+            }));
+        assert_eq!(
+            serde_json::to_value(&action).unwrap(),
+            serde_json::json!({
+                "type": "CValidatorAction",
+                "changeProfile": {
+                    "node_ip": {"Ip": "1.2.3.4"},
+                    "name": null,
+                    "description": null,
+                    "unjailed": true,
+                    "disable_delegations": null,
+                    "commission_bps": 500,
+                    "signer": null
+                }
+            })
+        );
+
+        let action = Action::CSignerAction(CSignerAction::JailSelf(()));
+        assert_eq!(
+            serde_json::to_value(&action).unwrap(),
+            serde_json::json!({"type": "CSignerAction", "jailSelf": null})
+        );
+
+        let action = Action::FinalizeEvmContract(FinalizeEvmContract {
+            token: 1,
+            input: FinalizeEvmContractInput::FirstStorageSlot,
+        });
+        assert_eq!(
+            serde_json::to_value(&action).unwrap(),
+            serde_json::json!({
+                "type": "finalizeEvmContract", "token": 1, "input": "firstStorageSlot"
+            })
+        );
+    }
+
+    /// Checks that mainnet still parses every undocumented action shape this module builds.
+    ///
+    /// None of these are in the gitbook, so a docs diff cannot catch them drifting. Each is
+    /// signed with a throwaway key so it cannot take effect; what matters is which error
+    /// comes back. "does not exist" means the payload parsed. HTTP 422 "Failed to
+    /// deserialize" means the wire format moved and this module needs updating.
+    ///
+    /// Ignored by default because it hits the network:
+    ///
+    /// ```bash
+    /// cargo test --lib undocumented_action_shapes_are_accepted -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "hits mainnet; run manually when auditing the SDK against the API"]
+    async fn undocumented_action_shapes_are_accepted() {
+        use alloy::signers::local::PrivateKeySigner;
+        use rust_decimal::dec;
+
+        use crate::hypercore;
+
+        let signer = PrivateKeySigner::random();
+        let client = hypercore::mainnet();
+        let chain = Chain::Mainnet;
+        let base = chrono::Utc::now().timestamp_millis() as u64;
+        let other = Address::ZERO;
+
+        let user_signed = |nonce: u64| (chain.arbitrum_id().to_owned(), chain, nonce);
+
+        let cases: Vec<(&str, Action)> = vec![
+            (
+                "modify",
+                Action::Modify(ModifyAction {
+                    oid: either::Either::Left(1),
+                    order: OrderRequest {
+                        asset: 0,
+                        is_buy: true,
+                        limit_px: dec!(1),
+                        sz: dec!(1),
+                        reduce_only: false,
+                        order_type: crate::hypercore::types::OrderTypePlacement::Limit {
+                            tif: crate::hypercore::types::TimeInForce::Alo,
+                        },
+                        cloid: crate::hypercore::types::Cloid::default(),
+                    },
+                    always_place: true,
+                }),
+            ),
+            (
+                "borrowLend",
+                Action::BorrowLend(BorrowLendAction {
+                    operation: BorrowLendOperation::Supply,
+                    token: 0,
+                    amount: Some(dec!(1)),
+                }),
+            ),
+            (
+                "createSubAccount",
+                Action::CreateSubAccount {
+                    name: "probe".into(),
+                },
+            ),
+            (
+                "subAccountModify",
+                Action::SubAccountModify(SubAccountModify {
+                    sub_account_user: other,
+                    name: "probe".into(),
+                }),
+            ),
+            (
+                "subAccountTransfer",
+                Action::SubAccountTransfer(SubAccountTransfer {
+                    sub_account_user: other,
+                    is_deposit: true,
+                    usd: 1,
+                }),
+            ),
+            (
+                "subAccountSpotTransfer",
+                Action::SubAccountSpotTransfer(SubAccountSpotTransfer {
+                    sub_account_user: other,
+                    is_deposit: true,
+                    token: "USDC:0x6d1e7cde53ba9467b783cb7c530ce054".into(),
+                    amount: dec!(1),
+                }),
+            ),
+            (
+                "createVault",
+                Action::CreateVault(CreateVault {
+                    name: "probe vault".into(),
+                    description: "a probe vault description".into(),
+                    initial_usd: 100_000_000,
+                    nonce: base,
+                }),
+            ),
+            (
+                "vaultModify",
+                Action::VaultModify(VaultModify {
+                    vault_address: other,
+                    allow_deposits: Some(true),
+                    always_close_on_withdraw: None,
+                }),
+            ),
+            (
+                "vaultDistribute",
+                Action::VaultDistribute(VaultDistribute {
+                    vault_address: other,
+                    usd: 0,
+                }),
+            ),
+            (
+                "setDisplayName",
+                Action::SetDisplayName {
+                    display_name: "probe".into(),
+                },
+            ),
+            (
+                "setReferrer",
+                Action::SetReferrer {
+                    code: "PROBE".into(),
+                },
+            ),
+            (
+                "registerReferrer",
+                Action::RegisterReferrer {
+                    code: "PROBE".into(),
+                },
+            ),
+            (
+                "spotUser",
+                Action::SpotUser(SpotUserAction {
+                    toggle_spot_dusting: ToggleSpotDusting { opt_out: false },
+                }),
+            ),
+            (
+                "finalizeEvmContract",
+                Action::FinalizeEvmContract(FinalizeEvmContract {
+                    token: 1,
+                    input: FinalizeEvmContractInput::Create { nonce: 1 },
+                }),
+            ),
+            (
+                "CSignerAction/jailSelf",
+                Action::CSignerAction(CSignerAction::JailSelf(())),
+            ),
+            (
+                "CValidatorAction/unregister",
+                Action::CValidatorAction(CValidatorAction::Unregister(())),
+            ),
+            ("linkStakingUser", {
+                let (signature_chain_id, hyperliquid_chain, nonce) = user_signed(base);
+                Action::LinkStakingUser(LinkStakingUserAction {
+                    signature_chain_id,
+                    hyperliquid_chain,
+                    user: other,
+                    is_finalize: false,
+                    nonce,
+                })
+            }),
+            ("stakingLinkDisableTradingUser", {
+                let (signature_chain_id, hyperliquid_chain, nonce) = user_signed(base);
+                Action::StakingLinkDisableTradingUser(StakingLinkDisableTradingUserAction {
+                    signature_chain_id,
+                    hyperliquid_chain,
+                    trading_user: other,
+                    nonce,
+                })
+            }),
+            ("userPortfolioMargin", {
+                let (signature_chain_id, hyperliquid_chain, nonce) = user_signed(base);
+                Action::UserPortfolioMargin(UserPortfolioMarginAction {
+                    signature_chain_id,
+                    hyperliquid_chain,
+                    user: other,
+                    enabled: true,
+                    nonce,
+                })
+            }),
+        ];
+
+        let mut failures = Vec::new();
+        for (i, (label, mut action)) in cases.into_iter().enumerate() {
+            let nonce = base + i as u64;
+
+            // These four repeat the nonce inside the payload, where it has to match the one
+            // the request is sent with.
+            match &mut action {
+                Action::LinkStakingUser(inner) => inner.nonce = nonce,
+                Action::StakingLinkDisableTradingUser(inner) => inner.nonce = nonce,
+                Action::UserPortfolioMargin(inner) => inner.nonce = nonce,
+                Action::CreateVault(inner) => inner.nonce = nonce,
+                _ => {}
+            }
+
+            let req = action.sign_sync(&signer, nonce, None, None, chain).unwrap();
+            let out = match client.send(req).await {
+                Ok(resp) => format!("{resp:?}"),
+                Err(err) => format!("ERR {err}"),
+            };
+            println!(
+                "{label:34} => {}",
+                out.chars().take(120).collect::<String>()
+            );
+
+            if out.contains("Failed to deserialize") {
+                failures.push(format!("{label}: {out}"));
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        }
+
+        assert!(
+            failures.is_empty(),
+            "the exchange no longer parses these action shapes:\n{}",
+            failures.join("\n")
+        );
     }
 }

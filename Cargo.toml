@@ -1,7 +1,7 @@
 ## Package metadata
 [package]
 name = "hypersdk"
-version = "0.2.14"
+version = "0.2.16"
 edition = "2024"
 authors = ["Dario <dario@infinitefieldtrading.com>"]
 license = "MPL-2.0"
@@ -11,7 +11,7 @@ homepage = "https://github.com/infinitefield/hypersdk"
 readme = "README.md"
 keywords = ["hyperliquid", "sdk", "trading", "dex", "perps"]
 documentation = "https://docs.rs/hypersdk"
-rust-version = "1.85.0"
+rust-version = "1.94.1"
 
 include = [
   "abi/**",
@@ -110,6 +110,10 @@ path = "examples/hypercore/websocket.rs"
 [[example]]
 name = "websocket-user-events"
 path = "examples/hypercore/websocket-user-events.rs"
+
+[[example]]
+name = "websocket-post"
+path = "examples/hypercore/websocket_post.rs"
 
 [[example]]
 name = "vault_details"
@@ -224,7 +228,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 alloy = { version = "2", default-features = false, features = ["contract", "eip712", "getrandom", "providers", "reqwest", "reqwest-rustls-tls", "rpc", "rpc-types", "signer-local", "signers", "sol-types"] }
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 thiserror = "2"
 const-hex = { version = "1.17", features = ["serde"] }
 derive_more = { version = "2", features = ["display", "is_variant"] }
@@ -242,7 +246,7 @@ tokio = { version = "1", default-features = false, features = ["test-util", "tim
 tokio-util = { version = "0.7", default-features = false }
 url = "2"
 yawc = { version = "0.3", features = ["simd"] }
-hex-literal = "0.4"
+hex-literal = "1"
 chrono = { version = "0.4", features = ["now"] }
 num-traits = "0.2"
 prost = "0.13"

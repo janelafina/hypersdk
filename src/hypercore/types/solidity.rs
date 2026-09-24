@@ -6,6 +6,7 @@
 use alloy::sol;
 
 sol! {
+    #[derive(serde::Serialize)]
     struct Agent {
         string source;
         bytes32 connectionId;
@@ -34,6 +35,22 @@ sol! {
         string token;
         string amount;
         string fromSubAccount;
+        uint64 nonce;
+    }
+
+    /// Core to EVM transfer carrying a data payload for `ICoreReceiveWithData` contracts.
+    ///
+    /// EIP-712 type: `HyperliquidTransaction:SendToEvmWithData`.
+    struct SendToEvmWithData {
+        string hyperliquidChain;
+        string token;
+        string amount;
+        string sourceDex;
+        string destinationRecipient;
+        string addressEncoding;
+        uint32 destinationChainId;
+        uint64 gasLimit;
+        bytes data;
         uint64 nonce;
     }
 
@@ -85,6 +102,35 @@ sol! {
         uint64 nonce;
     }
 
+    /// User-signed portfolio margin toggle.
+    ///
+    /// EIP-712 type: `HyperliquidTransaction:UserPortfolioMargin`.
+    struct UserPortfolioMargin {
+        string hyperliquidChain;
+        address user;
+        bool enabled;
+        uint64 nonce;
+    }
+
+    /// User-signed link of a staking account to a trading account.
+    ///
+    /// EIP-712 type: `HyperliquidTransaction:LinkStakingUser`.
+    struct LinkStakingUser {
+        string hyperliquidChain;
+        address user;
+        bool isFinalize;
+        uint64 nonce;
+    }
+
+    /// User-signed removal of a trading account's staking link.
+    ///
+    /// EIP-712 type: `HyperliquidTransaction:StakingLinkDisableTradingUser`.
+    struct StakingLinkDisableTradingUser {
+        string hyperliquidChain;
+        address tradingUser;
+        uint64 nonce;
+    }
+
     struct Withdraw3 {
         string hyperliquidChain;
         string destination;
@@ -102,8 +148,9 @@ sol! {
     struct TokenDelegate {
         string hyperliquidChain;
         address validator;
-        bool isUndelegate;
         uint64 wei;
+        bool isUndelegate;
+        uint64 nonce;
     }
 }
 

@@ -280,6 +280,7 @@ async fn main() -> anyhow::Result<()> {
                             asset: market.index,
                             oid,
                         }],
+                        fast: false,
                     },
                     nonce.next(),
                     vault_address,
@@ -500,6 +501,7 @@ async fn retry_uncanceled(
                 signer,
                 BatchCancel {
                     cancels: vec![Cancel { asset, oid }],
+                    fast: false,
                 },
                 nonce.next(),
                 vault_address,
