@@ -2,4 +2,5 @@ target
 .env
 /Cargo.lock
 *.json
+!src/hypercore/testdata/signing.json
 docs

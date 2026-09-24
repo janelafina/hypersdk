@@ -90,6 +90,7 @@ use serde_with::{DisplayFromStr, serde_as};
 use crate::hypercore::{Chain, Cloid, OidOrCloid, SpotToken};
 
 pub mod api;
+pub mod deploy;
 pub(super) mod solidity;
 
 // Re-export important raw types for convenience
@@ -207,7 +208,6 @@ pub const ARBITRUM_TESTNET_EIP712_DOMAIN: Eip712Domain = eip712_domain! {
 pub struct Dex {
     pub(super) name: String,
     pub(super) index: usize,
-    pub(super) deployer_fee_scale: Option<Decimal>,
 }
 
 impl Dex {
@@ -222,11 +222,7 @@ impl Dex {
     ///
     /// A new `Dex` instance.
     pub fn new(name: String, index: usize) -> Dex {
-        Dex {
-            name,
-            index,
-            deployer_fee_scale: None,
-        }
+        Dex { name, index }
     }
 
     /// Returns the DEX name.
@@ -239,12 +235,6 @@ impl Dex {
     #[must_use]
     pub fn index(&self) -> usize {
         self.index
-    }
-
-    /// Returns the deployer fee scale for this DEX.
-    #[must_use]
-    pub fn deployer_fee_scale(&self) -> Option<Decimal> {
-        self.deployer_fee_scale
     }
 }
 
@@ -282,10 +272,61 @@ pub enum Side {
 #[serde(tag = "method")]
 #[serde(rename_all = "camelCase")]
 pub enum Outgoing {
-    Subscribe { subscription: Subscription },
-    Unsubscribe { subscription: Subscription },
+    Subscribe {
+        subscription: Subscription,
+    },
+    Unsubscribe {
+        subscription: Subscription,
+    },
+    /// An info request or a signed action sent over the socket instead of HTTP.
+    ///
+    /// The server replies with [`Incoming::Post`] carrying the same `id`.
+    Post {
+        id: u64,
+        request: PostRequest,
+    },
     Ping,
     Pong,
+}
+
+/// Payload of an [`Outgoing::Post`].
+///
+/// Anything postable over HTTP is postable here, except `explorer` requests.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/post-requests>
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload")]
+#[serde(rename_all = "camelCase")]
+pub enum PostRequest {
+    /// An info request body, the same JSON that `/info` accepts.
+    Info(serde_json::Value),
+    /// A signed action, the same body that `/exchange` accepts.
+    Action(Box<ActionRequest>),
+}
+
+/// Server reply to an [`Outgoing::Post`], delivered as [`Incoming::Post`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostResponse {
+    /// Echoes the `id` of the originating [`Outgoing::Post`].
+    pub id: u64,
+    /// The result, or an error mirroring the HTTP status that would have been returned.
+    pub response: PostResponsePayload,
+}
+
+/// Result of a posted request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload")]
+#[serde(rename_all = "camelCase")]
+pub enum PostResponsePayload {
+    /// Response to a [`PostRequest::Info`].
+    ///
+    /// Note this is wrapped one level deeper than the HTTP response: the value is
+    /// `{"type": <the info request type>, "data": <what /info would have returned>}`.
+    Info(serde_json::Value),
+    /// Response to a [`PostRequest::Action`].
+    Action(Response),
+    /// The request failed. Mirrors the HTTP status code and description.
+    Error(String),
 }
 
 /// WebSocket subscription request.
@@ -400,13 +441,19 @@ pub enum Subscription {
     /// User-specific asset limits and leverage information (perps only)
     #[display("activeAssetData({user},{coin})")]
     ActiveAssetData { user: Address, coin: String },
-    /// Frontend-oriented aggregate user data feed
-    #[display("webData2({user},{dex:?})")]
-    WebData2 {
-        user: Address,
+    /// Asset contexts for every perp on a DEX
+    #[display("assetCtxs({dex:?})")]
+    AssetCtxs {
+        /// DEX name. `None` or `Some("")` for the main perp DEX.
         #[serde(skip_serializing_if = "Option::is_none")]
         dex: Option<String>,
     },
+    /// Asset contexts for every spot pair
+    #[display("spotAssetCtxs")]
+    SpotAssetCtxs,
+    /// Historical (filled, cancelled, rejected) orders for a user
+    #[display("userHistoricalOrders({user})")]
+    UserHistoricalOrders { user: Address },
     #[display("clearinghouseState({user},{dex:?})")]
     ClearinghouseState {
         user: Address,
@@ -519,6 +566,8 @@ pub enum Subscription {
 pub enum Incoming {
     /// Confirmation of subscription/unsubscription
     SubscriptionResponse(Outgoing),
+    /// Reply to an [`Outgoing::Post`], correlated by its `id`.
+    Post(PostResponse),
     /// Best bid and offer update
     Bbo(Bbo),
     /// Order book snapshot or delta
@@ -556,11 +605,21 @@ pub enum Incoming {
     ActiveSpotAssetCtx { coin: String, ctx: SpotAssetContext },
     /// Real-time user asset limits/leverage for a perp asset
     ActiveAssetData(ActiveAssetData),
-    /// Frontend aggregate user snapshot (dynamic schema)
-    WebData2 {
-        dex: Option<String>,
-        #[serde(flatten)]
-        data: serde_json::Value,
+    /// Asset contexts for every perp on a DEX
+    AssetCtxs {
+        /// DEX name, empty for the main perp DEX.
+        dex: String,
+        ctxs: Vec<PerpAssetCtx>,
+    },
+    /// Asset contexts for every spot pair
+    SpotAssetCtxs(Vec<WsSpotAssetCtx>),
+    /// Historical orders for a user
+    #[serde(rename_all = "camelCase")]
+    UserHistoricalOrders {
+        #[serde(default)]
+        is_snapshot: bool,
+        user: Address,
+        order_history: Vec<OrderUpdate<BasicOrder>>,
     },
     /// Clearing house state for a user on a specific dex
     #[serde(rename_all = "camelCase")]
@@ -630,6 +689,12 @@ pub enum Incoming {
     ),
     /// Outcome market metadata updates
     OutcomeMetaUpdates(serde_json::Value),
+    /// The server rejected a request, most often a subscription it no longer supports.
+    ///
+    /// Carries the offending request echoed back. Without this variant a removed
+    /// subscription is silent: the frame fails to parse, gets logged, and the caller simply
+    /// never receives data.
+    Error(String),
     /// Server heartbeat ping
     Ping,
     /// Server heartbeat pong
@@ -2268,7 +2333,7 @@ impl AgentSendAsset {
 /// }
 /// # }
 /// ```
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OrderResponseStatus {
     /// Order accepted (generic)
@@ -2556,6 +2621,18 @@ pub enum TpSl {
 pub struct BatchModify {
     /// The modifications to apply.
     pub modifies: Vec<Modify>,
+    /// Place each new order even if its cancel failed.
+    ///
+    /// When `false` every new order must be a non-trigger ALO, or a non-executable GTC whose
+    /// TIF is then overridden to ALO. Serialized as `a`, and omitted when `false`: the
+    /// exchange rejects an action hashed with `a: false`.
+    #[serde(
+        rename = "a",
+        default,
+        skip_serializing_if = "std::ops::Not::not",
+        alias = "alwaysPlace"
+    )]
+    pub always_place: bool,
 }
 
 /// Modification of an existing order.
@@ -2579,6 +2656,11 @@ pub struct Modify {
 #[serde(rename_all = "camelCase")]
 pub struct BatchCancel {
     pub cancels: Vec<Cancel>,
+    /// Fast cancel. Rejected if any cancel refers to a trigger order.
+    ///
+    /// Omitted from the request (and from the signing hash) when `false`.
+    #[serde(rename = "f", default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
 }
 
 /// Batch cancel by cloid request.
@@ -2588,6 +2670,11 @@ pub struct BatchCancel {
 #[serde(rename_all = "camelCase")]
 pub struct BatchCancelCloid {
     pub cancels: Vec<CancelByCloid>,
+    /// Fast cancel. Rejected if any cancel refers to a trigger order.
+    ///
+    /// Omitted from the request (and from the signing hash) when `false`.
+    #[serde(rename = "f", default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
 }
 
 /// Cancel request for a single order.
@@ -3127,6 +3214,73 @@ pub struct UserRateLimit {
     pub n_requests_surplus: Option<u64>,
 }
 
+/// Exchange-wide status, from the `exchangeStatus` info request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExchangeStatus {
+    /// Server time in milliseconds.
+    pub time: u64,
+    /// Set while the exchange is in a degraded or restricted mode.
+    #[serde(default)]
+    pub special_statuses: Option<serde_json::Value>,
+}
+
+/// Whether an account has accepted terms and is allowed to trade, from `legalCheck`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegalCheck {
+    /// Whether the account has accepted the terms of use.
+    pub accepted_terms: bool,
+    /// Whether the account may trade.
+    pub user_allowed: bool,
+    /// Restriction code, e.g. `"o"` for none.
+    pub restrictions: String,
+}
+
+/// Sanction, existence and fee checks for a transfer, from `preTransferCheck`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreTransferCheck {
+    /// Whether the destination is sanctioned.
+    pub is_sanctioned: bool,
+    /// Whether the destination already exists on the exchange.
+    pub user_exists: bool,
+    /// Whether the destination has ever sent a transaction.
+    pub user_has_sent_tx: bool,
+    /// Activation fee charged if the destination does not exist yet.
+    pub fee: Decimal,
+}
+
+/// Which bridge USDC deposits and withdrawals route over, from `usdcRouting`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsdcRouting {
+    /// Route used for deposits, e.g. `"cctp"`.
+    pub deposit_route: String,
+    /// Route used for withdrawals.
+    pub withdrawal_route: String,
+}
+
+/// A margin table, from the `marginTable` info request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarginTable {
+    /// Human-readable label. Often empty.
+    pub description: String,
+    /// Tiers in order of increasing lower bound and decreasing max leverage.
+    pub margin_tiers: Vec<MarginTier>,
+}
+
+/// One tier of a [`MarginTable`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarginTier {
+    /// Position notional above which `max_leverage` applies.
+    pub lower_bound: Decimal,
+    /// Maximum leverage in this tier.
+    pub max_leverage: u32,
+}
+
 /// Perp asset context (funding rate, mark price, open interest, etc).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3143,6 +3297,27 @@ pub struct PerpAssetCtx {
     pub prev_day_px: Decimal,
     #[serde(default)]
     pub day_base_vlm: Option<Decimal>,
+}
+
+/// Spot asset context from the `spotAssetCtxs` websocket subscription.
+///
+/// Wider than [`SpotAssetCtx`]: entries carry the pair they belong to and its supply, because
+/// the feed is not aligned with a separate metadata list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WsSpotAssetCtx {
+    /// Pair name, e.g. `"PURR/USDC"` or an `"@1"` style index.
+    pub coin: String,
+    pub mark_px: Decimal,
+    pub mid_px: Option<Decimal>,
+    pub prev_day_px: Decimal,
+    pub day_ntl_vlm: Decimal,
+    #[serde(default)]
+    pub day_base_vlm: Option<Decimal>,
+    #[serde(default)]
+    pub circulating_supply: Option<Decimal>,
+    #[serde(default)]
+    pub total_supply: Option<Decimal>,
 }
 
 /// Spot asset context.
@@ -3184,6 +3359,8 @@ pub struct UserFundingEntry {
 pub struct PredictedFundingVenue {
     pub funding_rate: Decimal,
     pub next_funding_time: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub funding_interval_hours: Option<u32>,
 }
 
 /// Staking delegation entry.
@@ -3495,8 +3672,8 @@ pub struct VaultDetails {
 /// let now = chrono::Utc::now().timestamp() as u64;
 /// let elapsed = now.saturating_sub(slot.start_time_seconds);
 /// let progress = elapsed as f64 / slot.duration_seconds as f64; // 0.0 → 1.0
-/// let start: Decimal = slot.start_gas.parse()?;
-/// let end: Decimal = slot.end_gas.as_ref().and_then(|s| s.parse().ok()).unwrap_or(start);
+/// let start = slot.start_gas;
+/// let end = slot.end_gas.unwrap_or(start);
 /// let current_price = start - (start - end) * Decimal::from_f64_retain(progress).unwrap();
 /// ```
 ///
@@ -3939,6 +4116,12 @@ pub(super) enum InfoRequest {
     UserAbstraction {
         user: Address,
     },
+    /// Query HIP-3 DEX abstraction state for a user.
+    UserDexAbstraction {
+        user: Address,
+    },
+    /// All HIP-4 outcome templates.
+    OutcomeTemplates,
     /// Check builder fee approval for a user.
     MaxBuilderFee {
         user: Address,
@@ -4056,10 +4239,6 @@ pub(super) enum InfoRequest {
     },
     /// All borrow/lend reserve states.
     AllBorrowLendReserveStates,
-    /// Aligned quote token info.
-    AlignedQuoteTokenInfo {
-        token: u32,
-    },
     /// TWAP slice fills via info endpoint.
     UserTwapSliceFills {
         user: Address,
@@ -4075,6 +4254,90 @@ pub(super) enum InfoRequest {
     /// Simple open orders (non-frontend).
     OpenOrders {
         user: Address,
+    },
+
+    // ----------------------------------------------------------------
+    // Undocumented info requests.
+    //
+    // The gitbook does not cover any of these, but mainnet answers all of them. Names are
+    // cross-checked against the nktkas TypeScript SDK and probed live by
+    // `info_requests_are_still_answered`.
+    // ----------------------------------------------------------------
+    /// Exchange-wide status flags.
+    ExchangeStatus,
+    /// IP addresses of the gossip root nodes.
+    GossipRootIps,
+    /// Whether a user has VIP fee status.
+    IsVip {
+        user: Address,
+    },
+    /// Vaults the user leads.
+    LeadingVaults {
+        user: Address,
+    },
+    /// Whether a user has accepted terms and is allowed to trade.
+    LegalCheck {
+        user: Address,
+    },
+    /// Accounts currently eligible for liquidation.
+    Liquidatable,
+    /// One margin table by id, giving its tiers and max leverage.
+    MarginTable {
+        id: u32,
+    },
+    /// Maximum market order notional per leverage bucket.
+    MaxMarketOrderNtls,
+    /// Sanction, existence and fee checks for a transfer between two accounts.
+    PreTransferCheck {
+        user: Address,
+        source: Address,
+    },
+    /// Recent trades for a coin.
+    RecentTrades {
+        coin: String,
+    },
+    /// A user's subaccounts, in the newer response shape.
+    SubAccounts2 {
+        user: Address,
+    },
+    /// A user's TWAP order history.
+    TwapHistory {
+        user: Address,
+    },
+    /// Which bridge USDC deposits and withdrawals currently route over.
+    UsdcRouting,
+    /// A user's accrued borrow/lend interest.
+    UserBorrowLendInterest {
+        user: Address,
+        #[serde(rename = "startTime")]
+        start_time: u64,
+        #[serde(rename = "endTime", skip_serializing_if = "Option::is_none")]
+        end_time: Option<u64>,
+    },
+    /// A user's TWAP slice fills within a time range.
+    UserTwapSliceFillsByTime {
+        user: Address,
+        #[serde(rename = "startTime")]
+        start_time: u64,
+        #[serde(rename = "endTime", skip_serializing_if = "Option::is_none")]
+        end_time: Option<u64>,
+        #[serde(rename = "aggregateByTime", skip_serializing_if = "Option::is_none")]
+        aggregate_by_time: Option<bool>,
+    },
+    /// Pending validator votes on L1 actions.
+    ValidatorL1Votes,
+    /// Every validator's stake, commission and status.
+    ValidatorSummaries,
+    /// Every vault's headline stats.
+    VaultSummaries,
+    /// Frontend-style aggregate account snapshot.
+    ///
+    /// The matching websocket subscription was removed; use
+    /// [`Subscription::WebData3`] for a live feed.
+    WebData2 {
+        user: Address,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dex: Option<String>,
     },
 }
 
@@ -4310,7 +4573,10 @@ mod tests {
                 user,
                 coin: "BTC".to_string(),
             },
-            Subscription::WebData2 { user, dex: None },
+            Subscription::WebData3 { user },
+            Subscription::UserHistoricalOrders { user },
+            Subscription::AssetCtxs { dex: None },
+            Subscription::SpotAssetCtxs,
         ];
 
         for sub in subs {
@@ -4670,9 +4936,9 @@ mod tests {
     }
 
     #[test]
-    fn test_incoming_web_data2_raw_payload() {
+    fn test_incoming_web_data3_raw_payload() {
         let json = r#"{
-            "channel":"webData2",
+            "channel":"webData3",
             "data":{
                 "clearinghouseState":{"time":1710002000000},
                 "openOrders":[{"oid":1234}]
@@ -4681,11 +4947,97 @@ mod tests {
 
         let incoming: Incoming = serde_json::from_str(json).unwrap();
         match incoming {
-            Incoming::WebData2 { data: payload, .. } => {
+            Incoming::WebData3 { data: payload } => {
                 assert_eq!(payload["clearinghouseState"]["time"], 1710002000000u64);
                 assert_eq!(payload["openOrders"][0]["oid"], 1234u64);
             }
-            _ => assert!(false, "Expected Incoming::WebData2"),
+            _ => assert!(false, "Expected Incoming::WebData3"),
+        }
+    }
+
+    /// A rejected subscription has to reach the caller, not just the log. This is the frame
+    /// mainnet sends for a subscription type it no longer supports.
+    #[test]
+    fn test_incoming_error_channel() {
+        let json = r#"{
+            "channel":"error",
+            "data":"Error parsing JSON into valid websocket request: {\"method\":\"subscribe\"}"
+        }"#;
+
+        let incoming: Incoming = serde_json::from_str(json).unwrap();
+        match incoming {
+            Incoming::Error(err) => assert!(err.contains("Error parsing JSON")),
+            _ => assert!(false, "Expected Incoming::Error"),
+        }
+    }
+
+    #[test]
+    fn test_incoming_asset_ctxs() {
+        let json = r#"{
+            "channel":"assetCtxs",
+            "data":{"dex":"","ctxs":[{
+                "funding":"0.0000125","openInterest":"36308.35","prevDayPx":"80195.0",
+                "dayNtlVlm":"4099822074.3","premium":"-0.0001646","oraclePx":"78956.0",
+                "markPx":"78943.0","midPx":"78942.5","impactPxs":["78942.0","78943.0"],
+                "dayBaseVlm":"51930.81"
+            }]}
+        }"#;
+
+        let incoming: Incoming = serde_json::from_str(json).unwrap();
+        match incoming {
+            Incoming::AssetCtxs { dex, ctxs } => {
+                assert_eq!(dex, "");
+                assert_eq!(ctxs.len(), 1);
+                assert_eq!(ctxs[0].mark_px.to_string(), "78943.0");
+            }
+            _ => assert!(false, "Expected Incoming::AssetCtxs"),
+        }
+    }
+
+    #[test]
+    fn test_incoming_spot_asset_ctxs() {
+        let json = r#"{
+            "channel":"spotAssetCtxs",
+            "data":[{
+                "prevDayPx":"0.15488","dayNtlVlm":"6587395.8","markPx":"0.13355",
+                "midPx":"0.133425","circulatingSupply":"594991889.75","coin":"PURR/USDC",
+                "totalSupply":"594991896.28","dayBaseVlm":"48286693.0"
+            }]
+        }"#;
+
+        let incoming: Incoming = serde_json::from_str(json).unwrap();
+        match incoming {
+            Incoming::SpotAssetCtxs(ctxs) => {
+                assert_eq!(ctxs.len(), 1);
+                assert_eq!(ctxs[0].coin, "PURR/USDC");
+                assert_eq!(ctxs[0].total_supply.unwrap().to_string(), "594991896.28");
+            }
+            _ => assert!(false, "Expected Incoming::SpotAssetCtxs"),
+        }
+    }
+
+    #[test]
+    fn test_incoming_user_historical_orders() {
+        let json = r#"{
+            "channel":"userHistoricalOrders",
+            "data":{
+                "isSnapshot":true,
+                "user":"0x1234567890abcdef1234567890abcdef12345678",
+                "orderHistory":[]
+            }
+        }"#;
+
+        let incoming: Incoming = serde_json::from_str(json).unwrap();
+        match incoming {
+            Incoming::UserHistoricalOrders {
+                is_snapshot,
+                order_history,
+                ..
+            } => {
+                assert!(is_snapshot);
+                assert!(order_history.is_empty());
+            }
+            _ => assert!(false, "Expected Incoming::UserHistoricalOrders"),
         }
     }
 
@@ -5048,6 +5400,436 @@ mod tests {
                 )
             }
         }
+    }
+
+    /// Checks that mainnet still answers every info request this SDK can build.
+    ///
+    /// Serialization tests only prove the SDK sends what it intends to; they cannot notice
+    /// the exchange dropping an endpoint. This walks every [`InfoRequest`] variant against
+    /// the live API and fails on an HTTP error. A 422 "Failed to deserialize" is how a
+    /// removed request type shows up, which is exactly how the dead `alignedQuoteTokenInfo`
+    /// was found.
+    ///
+    /// Ignored by default because it hits the network. Run it when the API docs change:
+    ///
+    /// ```bash
+    /// cargo test --lib info_requests_are_still_answered -- --ignored --nocapture
+    /// ```
+    ///
+    /// The deployer-action counterpart is
+    /// `hypercore::types::deploy::tests::deployer_action_shapes_are_still_accepted`.
+    #[tokio::test]
+    #[ignore = "hits mainnet; run manually when auditing the SDK against the API docs"]
+    async fn info_requests_are_still_answered() {
+        use alloy::primitives::address;
+
+        // An arbitrary address with history, so responses are non-trivial.
+        const USER: Address = address!("0xa166e3fa63c25663024b03f2e0da011a00307e40");
+        const HLP: Address = address!("0xdfc24b077bc1425ad1dea75bcb6f8158e10df303");
+
+        let client = crate::hypercore::mainnet();
+        let requests = vec![
+            InfoRequest::Meta { dex: None },
+            InfoRequest::SpotMeta,
+            InfoRequest::PerpDexs,
+            InfoRequest::FrontendOpenOrders {
+                user: USER,
+                dex: None,
+            },
+            InfoRequest::HistoricalOrders { user: USER },
+            InfoRequest::UserFills {
+                user: USER,
+                aggregate_by_time: None,
+            },
+            InfoRequest::UserFillsByTime {
+                user: USER,
+                start_time: 1_750_000_000_000,
+                end_time: None,
+                aggregate_by_time: None,
+            },
+            InfoRequest::OrderStatus {
+                user: USER,
+                oid: either::Either::Left(1),
+            },
+            InfoRequest::SpotClearinghouseState { user: USER },
+            InfoRequest::ClearinghouseState {
+                user: USER,
+                dex: None,
+            },
+            InfoRequest::AllMids { dex: None },
+            InfoRequest::CandleSnapshot {
+                req: CandleSnapshotRequest {
+                    coin: "BTC".to_string(),
+                    interval: CandleInterval::OneHour,
+                    start_time: 1_750_000_000_000,
+                    end_time: 1_750_003_600_000,
+                },
+            },
+            InfoRequest::UserToMultiSigSigners { user: USER },
+            InfoRequest::ExtraAgents { user: USER },
+            InfoRequest::FundingHistory {
+                coin: "BTC".to_string(),
+                start_time: 1_750_000_000_000,
+                end_time: None,
+            },
+            InfoRequest::VaultDetails {
+                vault_address: HLP,
+                user: None,
+            },
+            InfoRequest::UserVaultEquities { user: USER },
+            InfoRequest::UserRole { user: USER },
+            InfoRequest::SubAccounts { user: USER },
+            InfoRequest::UserFees { user: USER },
+            InfoRequest::OutcomeMeta,
+            InfoRequest::OutcomeTemplates,
+            InfoRequest::GossipPriorityAuctionStatus,
+            InfoRequest::UserAbstraction { user: USER },
+            InfoRequest::UserDexAbstraction { user: USER },
+            InfoRequest::MaxBuilderFee {
+                user: USER,
+                builder: USER,
+            },
+            InfoRequest::MetaAndAssetCtxs { dex: None },
+            InfoRequest::SpotMetaAndAssetCtxs,
+            InfoRequest::UserRateLimit { user: USER },
+            InfoRequest::UserFunding {
+                user: USER,
+                start_time: 1_750_000_000_000,
+                end_time: None,
+            },
+            InfoRequest::UserNonFundingLedgerUpdates {
+                user: USER,
+                start_time: 1_750_000_000_000,
+                end_time: None,
+            },
+            InfoRequest::PredictedFundings,
+            InfoRequest::PerpsAtOpenInterestCap { dex: None },
+            InfoRequest::PerpDeployAuctionStatus,
+            InfoRequest::ActiveAssetData {
+                user: USER,
+                coin: "BTC".to_string(),
+            },
+            // A DEX that actually exists; a made-up name returns HTTP 500.
+            InfoRequest::PerpDexLimits {
+                dex: "flx".to_string(),
+            },
+            InfoRequest::PerpDexStatus {
+                dex: "flx".to_string(),
+            },
+            InfoRequest::AllPerpMetas,
+            InfoRequest::PerpAnnotation {
+                coin: "BTC".to_string(),
+            },
+            InfoRequest::PerpCategories,
+            InfoRequest::PerpConciseAnnotations,
+            InfoRequest::SpotDeployState { user: USER },
+            InfoRequest::SpotPairDeployAuctionStatus,
+            InfoRequest::TokenDetails {
+                token_id: "0x6d1e7cde53ba9467b783cb7c530ce054".to_string(),
+            },
+            InfoRequest::SettledOutcome { outcome: 0 },
+            InfoRequest::Portfolio { user: USER },
+            InfoRequest::Referral { user: USER },
+            InfoRequest::ApprovedBuilders { user: USER },
+            InfoRequest::Delegations { user: USER },
+            InfoRequest::DelegatorSummary { user: USER },
+            InfoRequest::DelegatorHistory { user: USER },
+            InfoRequest::DelegatorRewards { user: USER },
+            InfoRequest::BorrowLendUserState { user: USER },
+            InfoRequest::BorrowLendReserveState { token: 0 },
+            InfoRequest::AllBorrowLendReserveStates,
+            InfoRequest::UserTwapSliceFills { user: USER },
+            InfoRequest::L2Book {
+                coin: "BTC".to_string(),
+                n_sig_figs: None,
+                mantissa: None,
+            },
+            InfoRequest::OpenOrders { user: USER },
+            // Undocumented, but answered by mainnet.
+            InfoRequest::ExchangeStatus,
+            InfoRequest::GossipRootIps,
+            InfoRequest::IsVip { user: USER },
+            InfoRequest::LeadingVaults { user: USER },
+            InfoRequest::LegalCheck { user: USER },
+            InfoRequest::Liquidatable,
+            InfoRequest::MarginTable { id: 50 },
+            InfoRequest::MaxMarketOrderNtls,
+            InfoRequest::PreTransferCheck {
+                user: USER,
+                source: HLP,
+            },
+            InfoRequest::RecentTrades {
+                coin: "BTC".to_string(),
+            },
+            InfoRequest::SubAccounts2 { user: USER },
+            InfoRequest::TwapHistory { user: USER },
+            InfoRequest::UsdcRouting,
+            InfoRequest::UserBorrowLendInterest {
+                user: USER,
+                start_time: 1_750_000_000_000,
+                end_time: None,
+            },
+            InfoRequest::UserTwapSliceFillsByTime {
+                user: USER,
+                start_time: 1_750_000_000_000,
+                end_time: None,
+                aggregate_by_time: None,
+            },
+            InfoRequest::ValidatorL1Votes,
+            InfoRequest::ValidatorSummaries,
+            InfoRequest::VaultSummaries,
+            InfoRequest::WebData2 {
+                user: USER,
+                dex: None,
+            },
+        ];
+
+        let mut failures = Vec::new();
+        for req in requests {
+            let label = serde_json::to_value(&req).unwrap()["type"]
+                .as_str()
+                .unwrap()
+                .to_string();
+
+            // Parsed loosely: this asserts the endpoint answers, not that the SDK's
+            // response type still matches.
+            match client
+                .send_info_request::<serde_json::Value>(&label, &req)
+                .await
+            {
+                Ok(_) => println!("{label:32} ok"),
+                Err(err) => {
+                    let err = err.to_string().chars().take(120).collect::<String>();
+                    println!("{label:32} FAILED {err}");
+                    failures.push(format!("{label}: {err}"));
+                }
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        }
+
+        assert!(
+            failures.is_empty(),
+            "info requests the exchange no longer answers:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    /// Checks that mainnet still accepts every subscription this SDK can build.
+    ///
+    /// The websocket counterpart to `info_requests_are_still_answered`, and the check that
+    /// was missing when `webData2` was removed: a dropped subscription is otherwise silent,
+    /// since the server answers with an `error` frame and the caller just never gets data.
+    ///
+    /// Each subscription gets its own connection so one rejection cannot mask another.
+    ///
+    /// ```bash
+    /// cargo test --lib subscriptions_are_still_accepted -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "hits mainnet; run manually when auditing the SDK against the API docs"]
+    async fn subscriptions_are_still_accepted() {
+        use alloy::primitives::address;
+        use futures::StreamExt;
+
+        use crate::hypercore::ws::Event;
+
+        const USER: Address = address!("0xa166e3fa63c25663024b03f2e0da011a00307e40");
+
+        let subs = vec![
+            Subscription::Bbo {
+                coin: "BTC".to_string(),
+            },
+            Subscription::Trades {
+                coin: "BTC".to_string(),
+            },
+            Subscription::L2Book {
+                coin: "BTC".to_string(),
+                n_sig_figs: None,
+                mantissa: None,
+                fast: false,
+            },
+            Subscription::L2Book {
+                coin: "BTC".to_string(),
+                n_sig_figs: None,
+                mantissa: None,
+                fast: true,
+            },
+            Subscription::Candle {
+                coin: "BTC".to_string(),
+                interval: "1m".to_string(),
+            },
+            Subscription::AllMids { dex: None },
+            Subscription::OrderUpdates { user: USER },
+            Subscription::UserFills { user: USER },
+            Subscription::UserEvents { user: USER },
+            Subscription::UserTwapSliceFills { user: USER },
+            Subscription::UserTwapHistory { user: USER },
+            Subscription::ActiveAssetCtx {
+                coin: "BTC".to_string(),
+            },
+            Subscription::ActiveAssetData {
+                user: USER,
+                coin: "BTC".to_string(),
+            },
+            Subscription::AssetCtxs { dex: None },
+            Subscription::SpotAssetCtxs,
+            Subscription::UserHistoricalOrders { user: USER },
+            Subscription::ClearinghouseState {
+                user: USER,
+                dex: None,
+            },
+            Subscription::AllDexsClearinghouseState { user: USER },
+            Subscription::OpenOrders {
+                user: USER,
+                dex: None,
+            },
+            Subscription::SpotState {
+                user: USER,
+                is_portfolio_margin: None,
+            },
+            Subscription::Notification { user: USER },
+            Subscription::WebData3 { user: USER },
+            Subscription::TwapStates {
+                user: USER,
+                dex: None,
+            },
+            Subscription::UserFundings { user: USER },
+            Subscription::UserNonFundingLedgerUpdates { user: USER },
+            Subscription::AllDexsAssetCtxs,
+            Subscription::FastAssetCtxs,
+            Subscription::OutcomeMetaUpdates,
+        ];
+
+        let mut failures = Vec::new();
+        for sub in subs {
+            let label = sub.to_string();
+            let mut ws = crate::hypercore::mainnet().websocket();
+            ws.subscribe(sub.clone());
+
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+                while let Some(event) = ws.next().await {
+                    match event {
+                        Event::Message(Incoming::SubscriptionResponse(_)) => return Ok(()),
+                        Event::Message(Incoming::Error(err)) => return Err(err),
+                        _ => continue,
+                    }
+                }
+                Err("stream ended".to_string())
+            })
+            .await;
+
+            match outcome {
+                Ok(Ok(())) => println!("{label:48} ok"),
+                Ok(Err(err)) => {
+                    let err = err.chars().take(100).collect::<String>();
+                    println!("{label:48} REJECTED {err}");
+                    failures.push(format!("{label}: {err}"));
+                }
+                Err(_) => {
+                    println!("{label:48} TIMEOUT");
+                    failures.push(format!("{label}: no subscription response in 15s"));
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "subscriptions the exchange no longer accepts:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    /// Checks that the market-wide feeds still deserialize into their modelled types.
+    ///
+    /// `subscriptions_are_still_accepted` only proves the exchange accepts a subscription; a
+    /// payload whose shape moved would still parse-fail later and be dropped as an unknown
+    /// frame. Limited to the channels that push without an account doing anything.
+    ///
+    /// ```bash
+    /// cargo test --lib subscription_payloads_still_parse -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "hits mainnet; run manually when auditing the SDK against the API docs"]
+    async fn subscription_payloads_still_parse() {
+        use alloy::primitives::address;
+        use futures::StreamExt;
+
+        use crate::hypercore::ws::Event;
+
+        // An address with order history, so the snapshot is not empty.
+        const USER: Address = address!("0xa166e3fa63c25663024b03f2e0da011a00307e40");
+
+        let subs = vec![
+            // Pushes a snapshot on subscribe, so it does not need the account to trade.
+            Subscription::UserHistoricalOrders { user: USER },
+            Subscription::AssetCtxs { dex: None },
+            Subscription::SpotAssetCtxs,
+            Subscription::AllDexsAssetCtxs,
+            Subscription::FastAssetCtxs,
+            Subscription::L2Book {
+                coin: "BTC".to_string(),
+                n_sig_figs: None,
+                mantissa: None,
+                fast: false,
+            },
+            Subscription::Bbo {
+                coin: "BTC".to_string(),
+            },
+            Subscription::Trades {
+                coin: "BTC".to_string(),
+            },
+            Subscription::ActiveAssetCtx {
+                coin: "BTC".to_string(),
+            },
+        ];
+
+        let mut failures = Vec::new();
+        for sub in subs {
+            let label = sub.to_string();
+            let mut ws = crate::hypercore::mainnet().websocket();
+            ws.subscribe(sub.clone());
+
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                while let Some(event) = ws.next().await {
+                    match event {
+                        // Anything that is not the subscribe ack is the feed's own payload,
+                        // and reaching here at all means it deserialized.
+                        Event::Message(Incoming::SubscriptionResponse(_)) => continue,
+                        Event::Message(Incoming::Error(err)) => return Err(err),
+                        Event::Message(Incoming::Ping | Incoming::Pong) => continue,
+                        Event::Message(msg) => return Ok(msg),
+                        _ => continue,
+                    }
+                }
+                Err("stream ended".to_string())
+            })
+            .await;
+
+            match outcome {
+                Ok(Ok(msg)) => {
+                    let channel = serde_json::to_value(&msg).unwrap()["channel"]
+                        .as_str()
+                        .unwrap_or("?")
+                        .to_string();
+                    println!("{label:28} ok (parsed as {channel})");
+                }
+                Ok(Err(err)) => {
+                    println!("{label:28} REJECTED {err}");
+                    failures.push(format!("{label}: {err}"));
+                }
+                Err(_) => {
+                    println!("{label:28} TIMEOUT (no payload in 30s)");
+                    failures.push(format!("{label}: no payload in 30s"));
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "subscription payloads that no longer parse:\n{}",
+            failures.join("\n")
+        );
     }
 
     mod info_request_serialization {
@@ -5613,14 +6395,6 @@ mod tests {
             assert_json(
                 InfoRequest::AllBorrowLendReserveStates,
                 serde_json::json!({"type": "allBorrowLendReserveStates"}),
-            );
-        }
-
-        #[test]
-        fn aligned_quote_token_info() {
-            assert_json(
-                InfoRequest::AlignedQuoteTokenInfo { token: 5 },
-                serde_json::json!({"type": "alignedQuoteTokenInfo", "token": 5}),
             );
         }
 

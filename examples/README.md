@@ -45,7 +45,7 @@ Start here if you're new to the SDK. These examples show read-only operations.
 | `list-tokens` | List all spot tokens with metadata | No |
 | `list-hip3` | Query HIP-3 DEXes and their perpetual markets | No |
 | `websocket` | Subscribe to real-time trades, order books, and user events | No (read-only) |
-| `websocket-user-events` | Subscribe to userEvents, TWAP streams, activeAssetData, and webData2 | No (read-only, requires user address) |
+| `websocket-user-events` | Subscribe to userEvents, TWAP streams, activeAssetData, and webData3 | No (read-only, requires user address) |
 | `websocket-candles` | Subscribe to real-time candlestick (OHLCV) data for a market | No (read-only) |
 | `vault_details` | Query vault details and performance metrics | No |
 | `user_vault_equities` | Query a user's vault deposits | No |

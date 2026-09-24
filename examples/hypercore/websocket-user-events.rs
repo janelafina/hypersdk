@@ -7,7 +7,8 @@
 //! - `userTwapSliceFills`
 //! - `userTwapHistory`
 //! - `activeAssetData`
-//! - `webData2`
+//! - `webData3`
+//! - `userHistoricalOrders`
 //!
 //! # Usage
 //!
@@ -60,7 +61,8 @@ async fn main() -> anyhow::Result<()> {
         user,
         coin: args.coin.clone(),
     });
-    ws.subscribe(Subscription::WebData2 { user, dex: None });
+    ws.subscribe(Subscription::WebData3 { user });
+    ws.subscribe(Subscription::UserHistoricalOrders { user });
     ws.subscribe(Subscription::ClearinghouseState { user, dex: None });
     ws.subscribe(Subscription::AllDexsClearinghouseState { user });
     ws.subscribe(Subscription::OpenOrders { user, dex: None });
@@ -149,9 +151,20 @@ async fn main() -> anyhow::Result<()> {
                         data.coin, data.leverage.leverage_type, data.leverage.value, max_sz, avail
                     );
                 }
-                Incoming::WebData2 { data: payload, .. } => {
+                Incoming::WebData3 { data: payload } => {
                     let keys = payload.as_object().map(|m| m.len()).unwrap_or(0);
-                    println!("webData2: object_keys={}", keys);
+                    println!("webData3: object_keys={}", keys);
+                }
+                Incoming::UserHistoricalOrders {
+                    is_snapshot,
+                    order_history,
+                    ..
+                } => {
+                    println!(
+                        "userHistoricalOrders: snapshot={} n={}",
+                        is_snapshot,
+                        order_history.len()
+                    );
                 }
                 Incoming::ClearinghouseState {
                     dex,

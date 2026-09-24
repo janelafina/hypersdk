@@ -268,16 +268,20 @@ Coordinate multi-signature transactions using decentralized peer-to-peer gossip,
 The initiator creates a transaction proposal and waits for authorized signers to connect and sign:
 
 ```bash
-hypecli multisig send-asset \
+hypecli send \
   --multi-sig-addr 0xYourMultiSigWallet... \
   --chain Mainnet \
-  --to 0xRecipient... \
+  --destination 0xRecipient... \
   --token USDC \
   --amount 100 \
   --keystore my-wallet
 ```
 
-If no wallet is detected, `hypecli` defaults to a connected Ledger, if any.
+Without signing credentials, `hypecli` searches connected Ledger and Trezor devices.
+Add `--local` to require all signatures locally. For internal transfers, omit
+`--destination` and use `--from` / `--to` (for example, `perp` to `spot`);
+the destination defaults to the multisig account. The older
+`hypecli multisig send-asset` command remains supported.
 
 **Output:**
 
@@ -291,6 +295,44 @@ Authorized 1/2
 ```
 
 The command displays a connection ticket that other signers can use to connect. It waits until the signature threshold is met, then submits the transaction.
+
+##### Supplying USDC to Earn
+
+Add `--multi-sig-addr` to supply USDC from a multisig account:
+
+```bash
+hypecli earn supply \
+  --multi-sig-addr 0x1111111111111111111111111111111111111111 \
+  --keystore my-wallet \
+  --token USDC \
+  --amount 100
+```
+
+Replace the address with your multisig account. Other signers join using the printed
+`hypecli multisig sign` command. Add `--local` to require enough local signers
+without starting P2P coordination. `earn withdraw` supports the same flags.
+Select the reserve with `--token USDC` or `--token USDT0`, just like `hypecli send`.
+Symbols are case-insensitive; numeric indexes also work. USDC is the default.
+The same token syntax works for supply, withdrawal, and status.
+Omitting `--amount` supplies or withdraws the maximum.
+Query the multisig position with `hypecli earn status --user <MULTISIG_ADDRESS>`.
+
+##### Multisig on Other Actions
+
+The same `--multi-sig-addr <ADDRESS>` and `--local` options work on:
+
+- `order limit`, `order market`, and `order cancel`
+- `vault deposit` and `vault withdraw`
+- `outcome split`, `outcome merge`, `outcome merge-question`, and `outcome negate`
+- `prio bid`
+
+These commands, Send, and Earn share the same software-key, Ledger, and Trezor
+signing flow. Omit `--multi-sig-addr` to sign with a single wallet. Multisig
+participants must be authorized signers of the target account; other participants
+join with `hypecli multisig sign`. `--local` requires `--multi-sig-addr`.
+
+Automated `twap` still requires a private key or keystore because it continuously
+places, modifies, and cancels orders.
 
 ##### Signing a Transaction
 
@@ -326,7 +368,23 @@ You can provide signing credentials via:
 
 - `--private-key 0x...` - Direct private key (hex format)
 - `--keystore filename` - Foundry keystore file (prompts for password)
-- No flag - Automatically searches connected Ledger devices
+- `--trezor-index N` - Select Trezor address `m/44'/60'/0'/0/N` directly
+- `--trezor-path PATH` - Select a full Trezor derivation path directly
+- No flag - Automatically searches connected Ledger and Trezor devices
+
+Trezor discovery checks saved paths, then requests one xpub for `m/44'/60'/0'/0`
+and derives candidate addresses locally. It searches indices 0–9 by default;
+`--trezor-scan-limit N` changes that limit. Explicit paths or indices skip discovery
+and cannot be combined with private-key or keystore credentials. Without an
+authorized-address filter, Trezor uses index 0 unless a path or index is specified.
+
+Successful address-to-path matches are saved in `~/.cache/hypecli/trezor-paths/`
+and checked against the connected wallet before reuse. No xpubs, private keys,
+passphrases, or session IDs are saved. Delete that directory to clear the hints.
+The same options apply when rescanning after swapping hardware wallets.
+
+`hypecli account test-signer --trezor-index N` tests the selected address by
+signing a test message and verifying its signature; it submits no transaction.
 
 For keystores:
 

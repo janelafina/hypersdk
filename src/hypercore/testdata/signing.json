@@ -1,0 +1,229 @@
+{
+  "source": "hyperliquid-python-sdk 0.24.0 hyperliquid/utils/signing.py",
+  "multisigUser": "0x1111111111111111111111111111111111111111",
+  "leader": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+  "userSigned": [
+    {
+      "chain": "Mainnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "approveAgent",
+        "signatureChainId": "0xa4b1",
+        "hyperliquidChain": "Mainnet",
+        "agentAddress": "0x2222222222222222222222222222222222222222",
+        "agentName": "",
+        "nonce": 1700000000000
+      },
+      "prehash": "0x176dd3681d458eba5ff77b764519c64fa805f7482b02d1b9bd8827efca89f6f1",
+      "multisigPrehash": "0x948bdc31d8263a4e02c743fda4c3e2ade22d89e851478163eec2d6a366a09587"
+    },
+    {
+      "chain": "Mainnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "approveAgent",
+        "signatureChainId": "0xa4b1",
+        "hyperliquidChain": "Mainnet",
+        "agentAddress": "0x2222222222222222222222222222222222222222",
+        "agentName": "bot",
+        "nonce": 1700000000000
+      },
+      "prehash": "0xea39a22e632c9783cb895bde19886275fe72501f6b036b954304baa396498396",
+      "multisigPrehash": "0x06471c13d62aa942bafa0e856ed7d1899e24bad7c018b7083a64adde3f60ccfa"
+    },
+    {
+      "chain": "Mainnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "tokenDelegate",
+        "signatureChainId": "0xa4b1",
+        "hyperliquidChain": "Mainnet",
+        "validator": "0x2222222222222222222222222222222222222222",
+        "wei": 100000000,
+        "isUndelegate": false,
+        "nonce": 1700000000000
+      },
+      "prehash": "0x62ce21959e335ce054541f50ba346d465355e448400df388c5fb542f91dcca41",
+      "multisigPrehash": "0x5e3486e6e610cb64b9ccdbcf5359127cb63d75b33b7ac0a3ceffcee8305e3685"
+    },
+    {
+      "chain": "Mainnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "tokenDelegate",
+        "signatureChainId": "0xa4b1",
+        "hyperliquidChain": "Mainnet",
+        "validator": "0x2222222222222222222222222222222222222222",
+        "wei": 100000000,
+        "isUndelegate": true,
+        "nonce": 1700000000000
+      },
+      "prehash": "0x7012cbad22ee270b269ba39b3b5fc01ed536d0ce82f53149328cc4fe5b18df47",
+      "multisigPrehash": "0x06871adfb91a992e96e5db604332b92ae7279f1c155e1f0ef73d5a48e93872e9"
+    },
+    {
+      "chain": "Testnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "approveAgent",
+        "signatureChainId": "0x66eee",
+        "hyperliquidChain": "Testnet",
+        "agentAddress": "0x2222222222222222222222222222222222222222",
+        "agentName": "",
+        "nonce": 1700000000000
+      },
+      "prehash": "0x4a3a14711073d93105a9643d60837a2118ef7984fa7c8a53fc8dd660fb776f33",
+      "multisigPrehash": "0xc8ae2e609f895382688c523fe5f7d03fc22a34a6401c66a156c62590e14b83bb"
+    },
+    {
+      "chain": "Testnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "approveAgent",
+        "signatureChainId": "0x66eee",
+        "hyperliquidChain": "Testnet",
+        "agentAddress": "0x2222222222222222222222222222222222222222",
+        "agentName": "bot",
+        "nonce": 1700000000000
+      },
+      "prehash": "0x3e2d91f3170aae67a8984753e79a83eeed7d011a39e1d585e45efea40e29c179",
+      "multisigPrehash": "0xb7396bdabe55fd1c7cf439432255cc6a401e18474385c3c7cf22f1469549fbf5"
+    },
+    {
+      "chain": "Testnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "tokenDelegate",
+        "signatureChainId": "0x66eee",
+        "hyperliquidChain": "Testnet",
+        "validator": "0x2222222222222222222222222222222222222222",
+        "wei": 100000000,
+        "isUndelegate": false,
+        "nonce": 1700000000000
+      },
+      "prehash": "0xb4c3f6517add1baad0e7be1101cab377ca318d971ac7ef9450a145ce14dab6c9",
+      "multisigPrehash": "0x030ab7b29963dcd525ff5038ba9a5b5e5f03275cb8321054b98334db6409f113"
+    },
+    {
+      "chain": "Testnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "tokenDelegate",
+        "signatureChainId": "0x66eee",
+        "hyperliquidChain": "Testnet",
+        "validator": "0x2222222222222222222222222222222222222222",
+        "wei": 100000000,
+        "isUndelegate": true,
+        "nonce": 1700000000000
+      },
+      "prehash": "0x434be21844df075c4acd848af4d5319d1224726a5b365ed6103e7162ddaef530",
+      "multisigPrehash": "0x34c1090faad92119e120dbbb9ee49923008012995646e9f4c6410392cdbc7576"
+    }
+  ],
+  "l1Contexts": [
+    {
+      "chain": "Mainnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "borrowLend",
+        "operation": "supply",
+        "token": 0,
+        "amount": "10"
+      },
+      "vault": null,
+      "expiresAfter": null,
+      "prehash": "0x6719c910a8a11cb08d08706bbb154b1161746de99e6e91d75a193c5e9ea75522"
+    },
+    {
+      "chain": "Mainnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "borrowLend",
+        "operation": "supply",
+        "token": 0,
+        "amount": "10"
+      },
+      "vault": null,
+      "expiresAfter": 1700000010000,
+      "prehash": "0x0d9bbcfb2384c121b704f42eeee718b8c3d4d865736dcd891ed8781f7af24a39"
+    },
+    {
+      "chain": "Mainnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "borrowLend",
+        "operation": "supply",
+        "token": 0,
+        "amount": "10"
+      },
+      "vault": "0x2222222222222222222222222222222222222222",
+      "expiresAfter": null,
+      "prehash": "0x0dfccae36d1dd112dfd3dc7489d2469e1932280fb324a7bdc69698254d47d059"
+    },
+    {
+      "chain": "Mainnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "borrowLend",
+        "operation": "supply",
+        "token": 0,
+        "amount": "10"
+      },
+      "vault": "0x2222222222222222222222222222222222222222",
+      "expiresAfter": 1700000010000,
+      "prehash": "0x555c4f5ebc368d55e33bdd0a30d3cf1ab497f4de0869b647c1b547778f65791b"
+    },
+    {
+      "chain": "Testnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "borrowLend",
+        "operation": "supply",
+        "token": 0,
+        "amount": "10"
+      },
+      "vault": null,
+      "expiresAfter": null,
+      "prehash": "0x23cf72fc8a2be4bb15abe17d0d8b5d75e9ccf5e33ed9c8e655acd2968bc50c9f"
+    },
+    {
+      "chain": "Testnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "borrowLend",
+        "operation": "supply",
+        "token": 0,
+        "amount": "10"
+      },
+      "vault": null,
+      "expiresAfter": 1700000010000,
+      "prehash": "0xf73444b220b3b1b4883548f5cc2216af143b46fb6bb55c8d3228b62750756211"
+    },
+    {
+      "chain": "Testnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "borrowLend",
+        "operation": "supply",
+        "token": 0,
+        "amount": "10"
+      },
+      "vault": "0x2222222222222222222222222222222222222222",
+      "expiresAfter": null,
+      "prehash": "0x3a741b191d81e941947a8af748b69284e4098ba15cc755aa611df9e14c9c30ce"
+    },
+    {
+      "chain": "Testnet",
+      "nonce": 1700000000000,
+      "action": {
+        "type": "borrowLend",
+        "operation": "supply",
+        "token": 0,
+        "amount": "10"
+      },
+      "vault": "0x2222222222222222222222222222222222222222",
+      "expiresAfter": 1700000010000,
+      "prehash": "0xb2f34c6283c7a4ca5fb69d796a9345a9b5bf4437cf2c72ba939b23a8704faad0"
+    }
+  ]
+}

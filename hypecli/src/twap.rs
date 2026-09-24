@@ -380,9 +380,9 @@ impl TwapCmd {
                         None => anyhow::bail!("websocket closed"),
                     };
 
-                    if state.update_bbo(&msg) && state.has_book && slice_started {
-                        if let Some(new_px) = state.top_of_book_price(self.side) {
-                            if state.last_quote_px != Some(new_px) {
+                    if state.update_bbo(&msg) && state.has_book && slice_started
+                        && let Some(new_px) = state.top_of_book_price(self.side)
+                            && state.last_quote_px != Some(new_px) {
                                 state.throttle().await;
                                 if let Some(oid) = state.resting_oid {
                                     self.modify_quote(client, signer, asset, state, oid, new_px).await?;
@@ -390,8 +390,6 @@ impl TwapCmd {
                                     self.place_quote(client, signer, asset, state, new_px).await?;
                                 }
                             }
-                        }
-                    }
 
                     if let Incoming::OrderUpdates(updates) = &msg {
                         for update in updates {
@@ -469,6 +467,7 @@ impl TwapCmd {
         if let Some(oid) = state.resting_oid.take() {
             let cancel = BatchCancel {
                 cancels: vec![Cancel { asset, oid }],
+                fast: false,
             };
             let _ = client.cancel(signer, cancel, nonce(), None, None).await;
         }
@@ -543,6 +542,9 @@ impl TwapCmd {
                 oid: OidOrCloid::Left(oid),
                 order,
             }],
+            // The replacement is an ALO chase order, so it is fine for the exchange to drop
+            // it if the cancel lost a race.
+            always_place: false,
         };
 
         match client.modify(signer, batch, nonce(), None, None).await {

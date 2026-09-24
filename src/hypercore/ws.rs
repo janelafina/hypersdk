@@ -133,7 +133,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 use yawc::{Frame, OpCode, Options, TcpWebSocket};
 
-use crate::hypercore::types::{Incoming, Outgoing, Subscription};
+use crate::hypercore::types::{Incoming, Outgoing, PostRequest, Subscription};
 
 struct Stream {
     stream: TcpWebSocket,
@@ -164,6 +164,13 @@ impl Stream {
     /// Unsubscribes from a topic.
     async fn unsubscribe(&mut self, subscription: Subscription) -> anyhow::Result<()> {
         let text = serde_json::to_string(&Outgoing::Unsubscribe { subscription })?;
+        self.stream.send(Frame::text(text)).await?;
+        Ok(())
+    }
+
+    /// Sends an info request or signed action over the socket.
+    async fn post(&mut self, id: u64, request: PostRequest) -> anyhow::Result<()> {
+        let text = serde_json::to_string(&Outgoing::Post { id, request })?;
         self.stream.send(Frame::text(text)).await?;
         Ok(())
     }
@@ -231,7 +238,12 @@ impl futures::Stream for Stream {
     }
 }
 
-type SubChannelData = (bool, Subscription);
+/// A control message sent from a [`Connection`] or [`ConnectionHandle`] to the background task.
+enum Command {
+    Subscribe(Subscription),
+    Unsubscribe(Subscription),
+    Post { id: u64, request: PostRequest },
+}
 
 /// Shared handle that keeps the WebSocket background task alive.
 ///
@@ -340,7 +352,7 @@ pub enum Event {
 /// ```
 pub struct Connection {
     rx: UnboundedReceiver<Event>,
-    tx: UnboundedSender<SubChannelData>,
+    tx: UnboundedSender<Command>,
     guard: ConnectionGuard,
 }
 
@@ -400,7 +412,7 @@ pub struct Connection {
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct ConnectionHandle {
-    tx: UnboundedSender<SubChannelData>,
+    tx: UnboundedSender<Command>,
     /// Keeps the CancellationToken alive; dropping this handle may trigger
     /// graceful shutdown of the background task if it was the last reference.
     #[allow(dead_code)]
@@ -490,7 +502,7 @@ impl Connection {
     /// - `ws.subscribe(Subscription::Trades { coin: "BTC".into() })`
     /// - `ws.subscribe(Subscription::L2Book { coin: "ETH".into(), n_sig_figs: None, mantissa: None, fast: false })`
     pub fn subscribe(&self, subscription: Subscription) {
-        let _ = self.tx.send((true, subscription));
+        let _ = self.tx.send(Command::Subscribe(subscription));
     }
 
     /// Unsubscribes from a WebSocket channel.
@@ -503,7 +515,21 @@ impl Connection {
     /// Unsubscribe from a channel:
     /// `ws.unsubscribe(Subscription::Trades { coin: "BTC".into() })`
     pub fn unsubscribe(&self, subscription: Subscription) {
-        let _ = self.tx.send((false, subscription));
+        let _ = self.tx.send(Command::Unsubscribe(subscription));
+    }
+
+    /// Sends an info request or a signed action over the socket instead of over HTTP.
+    ///
+    /// `id` is echoed back on the reply, which arrives on the event stream as
+    /// [`Incoming::Post`]; use a distinct `id` per outstanding request to match them up.
+    ///
+    /// Posts are not replayed across reconnects. If the connection drops before the server
+    /// answers, no reply for that `id` will ever arrive, so callers that need delivery
+    /// guarantees should time out and retry.
+    ///
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/post-requests>
+    pub fn post(&self, id: u64, request: PostRequest) {
+        let _ = self.tx.send(Command::Post { id, request });
     }
 
     /// Closes the WebSocket connection and shuts down the background task.
@@ -559,7 +585,7 @@ impl ConnectionHandle {
     /// - `ws.subscribe(Subscription::Trades { coin: "BTC".into() })`
     /// - `ws.subscribe(Subscription::L2Book { coin: "ETH".into(), n_sig_figs: None, mantissa: None, fast: false })`
     pub fn subscribe(&self, subscription: Subscription) {
-        let _ = self.tx.send((true, subscription));
+        let _ = self.tx.send(Command::Subscribe(subscription));
     }
 
     /// Unsubscribes from a WebSocket channel.
@@ -572,7 +598,21 @@ impl ConnectionHandle {
     /// Unsubscribe from a channel:
     /// `ws.unsubscribe(Subscription::Trades { coin: "BTC".into() })`
     pub fn unsubscribe(&self, subscription: Subscription) {
-        let _ = self.tx.send((false, subscription));
+        let _ = self.tx.send(Command::Unsubscribe(subscription));
+    }
+
+    /// Sends an info request or a signed action over the socket instead of over HTTP.
+    ///
+    /// `id` is echoed back on the reply, which arrives on the event stream as
+    /// [`Incoming::Post`]; use a distinct `id` per outstanding request to match them up.
+    ///
+    /// Posts are not replayed across reconnects. If the connection drops before the server
+    /// answers, no reply for that `id` will ever arrive, so callers that need delivery
+    /// guarantees should time out and retry.
+    ///
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/post-requests>
+    pub fn post(&self, id: u64, request: PostRequest) {
+        let _ = self.tx.send(Command::Post { id, request });
     }
 
     /// Drops this handle, releasing its reference to the shared connection.
@@ -601,7 +641,7 @@ impl futures::Stream for ConnectionStream {
 async fn connection(
     url: Url,
     tx: UnboundedSender<Event>,
-    mut srx: UnboundedReceiver<SubChannelData>,
+    mut srx: UnboundedReceiver<Command>,
     shutdown: CancellationToken,
 ) {
     const MAX_MISSED_PONGS: u8 = 2;
@@ -702,21 +742,35 @@ async fn connection(
                     }
                 }
                 item = srx.recv() => {
-                    let Some((is_sub, sub)) = item else { return };
-                    if is_sub {
-                        if !subs.insert(sub.clone()) {
-                            log::debug!("Already subscribed to {sub:?}");
-                            continue;
-                        }
+                    let Some(command) = item else { return };
+                    match command {
+                        Command::Subscribe(sub) => {
+                            if !subs.insert(sub.clone()) {
+                                log::debug!("Already subscribed to {sub:?}");
+                                continue;
+                            }
 
-                        if let Err(err) = stream.subscribe(sub).await {
-                            log::error!("Subscribing: {err:?}");
-                            break;
+                            if let Err(err) = stream.subscribe(sub).await {
+                                log::error!("Subscribing: {err:?}");
+                                break;
+                            }
                         }
-                    } else if subs.remove(&sub) {
-                        if let Err(err) = stream.unsubscribe(sub).await {
-                            log::error!("Unsubscribing: {err:?}");
-                            break;
+                        Command::Unsubscribe(sub) => {
+                            if subs.remove(&sub)
+                                && let Err(err) = stream.unsubscribe(sub).await
+                            {
+                                log::error!("Unsubscribing: {err:?}");
+                                break;
+                            }
+                        }
+                        // Posts are one-shot: unlike subscriptions they are not replayed
+                        // after a reconnect, so a dropped connection loses the request and
+                        // the caller sees no reply for that id.
+                        Command::Post { id, request } => {
+                            if let Err(err) = stream.post(id, request).await {
+                                log::error!("Posting request {id}: {err:?}");
+                                break;
+                            }
                         }
                     }
                 }
