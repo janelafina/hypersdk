@@ -45,6 +45,7 @@
 //! [`fills_from_env`], [`l2_book_diff_from_env`], and [`book_from_env`] for
 //! convenience wrappers.
 
+pub mod bbo;
 pub mod book;
 pub mod grpc;
 pub mod http;
@@ -59,6 +60,7 @@ use std::env;
 use anyhow::{Context, Result, anyhow};
 use url::Url;
 
+pub use bbo::{BBO_MAX_COINS, Bbo, BboRequest, BboRequestError, BboStreamError, stream_bbo};
 pub use book::{BookConnection, BookError, BookEvent, BookMessage, BookSubscription};
 pub use grpc::{
     Event as FillsEvent, FillsConnection, FillsConnectionStream,

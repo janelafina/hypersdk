@@ -456,3 +456,30 @@ Run the example (add `--l4` to use the L4 feed through the same interface):
 cargo run --example dwellir_l2_book_diff -- BTC ETH
 cargo run --example dwellir_l2_book_diff -- --l4 BTC
 ```
+
+## BBO Stream (gRPC)
+
+Dwellir's v3 `MarketStreaming` service also exposes
+`hyperliquid_l1_gateway.v3.MarketStreaming/StreamBbo`: the best bid and ask of
+1-20 coins (main-dex and builder-dex names such as `xyz:XYZ100`) on one
+server-streaming RPC, with the same endpoint and `x-api-key` metadata as the
+L2 diff stream. It opens with the current top of book of every coin, then sends
+one `BboUpdate` per coin whenever that coin's top level (price, size or order
+count) changes. Cross-coin order is unspecified; a frame may repeat a value
+after the server recovers from subscriber lag; `ABORTED` means reconnect for
+fresh opening values.
+
+```rust,ignore
+use hypersdk::hypercore::dwellir::{Bbo, BboRequest, stream_bbo};
+
+let mut stream = stream_bbo(&endpoint, Some(&api_key), &BboRequest::new(["BTC", "ETH"]))
+    .await?
+    .into_inner();
+while let Some(update) = stream.message().await? {
+    let bbo = Bbo::try_from(update)?; // coin, time, block_number, bid, ask
+}
+```
+
+`stream_bbo` opens one subscription; the caller owns reconnection. The field
+numbers of `BboRequest`/`BboUpdate` were pinned from live frames (see
+`src/hypercore/dwellir/bbo.rs`). See `examples/hypercore/dwellir_bbo.rs`.
