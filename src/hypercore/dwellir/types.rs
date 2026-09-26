@@ -622,7 +622,7 @@ impl TryFrom<super::l2::wire::L2CoinDiff> for L2CoinDiff {
     }
 }
 
-fn convert_l2_level(
+pub(crate) fn convert_l2_level(
     coin: &str,
     side: Side,
     level: super::l2::wire::L2Level,
